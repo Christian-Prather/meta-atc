@@ -124,15 +124,6 @@ tests/run.sh
 
 This runs every check that needs no Yocto build. CI runs the same command.
 
-Some checks compare the layer's copies of atc files with the atc source. They
-run only when `ATC_MONOREPO` names a checkout of that source, and the output
-says when they are skipped. The atc maintainers run them each time the atc
-source moves to a new layer commit:
-
-```sh
-ATC_MONOREPO=/path/to/atc-source tests/run.sh
-```
-
 ## License
 
 MIT. See [LICENSE](LICENSE). The atcd binary that the layer downloads is
