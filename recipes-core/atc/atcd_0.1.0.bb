@@ -5,7 +5,7 @@ does NOT install a systemd unit: the unit interpolates the store root, socket \
 path, service user and telemetry endpoint of the specific device, so a copy \
 baked into an image drifts from render_systemd_unit. First-boot \
 `atc bootstrap atcd install` renders it."
-HOMEPAGE = "https://github.com/Agency-Tool-Company/meta-atc"
+HOMEPAGE = "https://github.com/Christian-Prather/meta-atc"
 # The layer's files are MIT. atcd, the guard and install-atcd.sh come from the
 # atc source, which is MIT OR Apache-2.0.
 LICENSE = "MIT | Apache-2.0"

@@ -3,7 +3,7 @@ DESCRIPTION = "The reboot that atcd requests through a file in the store, the \
 15-minute trial deadline, and the systemd watchdog drop-in. atcd runs as user \
 atc and drives RAUC over D-Bus; these units are the parts that need root and \
 that must work when atcd does not run."
-HOMEPAGE = "https://github.com/Agency-Tool-Company/meta-atc"
+HOMEPAGE = "https://github.com/Christian-Prather/meta-atc"
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 

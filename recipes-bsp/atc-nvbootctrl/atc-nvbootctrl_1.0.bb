@@ -4,7 +4,7 @@ slot variables, the boot unit that records each boot's slot state, and the \
 trial predicate that atc-os reads. \
 tests/atc-nvbootctrl-backend_test.sh runs the backend against a \
 fake nvbootctrl and a fake efivarfs directory."
-HOMEPAGE = "https://github.com/Agency-Tool-Company/meta-atc"
+HOMEPAGE = "https://github.com/Christian-Prather/meta-atc"
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
