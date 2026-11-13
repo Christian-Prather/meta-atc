@@ -96,14 +96,16 @@ EOF
   cat > "$root/meta-atc/recipes-core/atc/atcd_0.1.0.bb" << 'EOF'
 ATCD_LIBEXEC = "/usr/local/libexec"
 ATCD_REMOTE_PATH = "${bindir}/atcd"
-ATCD_BINARY ?= ""
-ATCD_BINARY_RESOLVED = "resolved-elsewhere"
 ATCD_EXPECTED_ELF_MACHINE:qemux86-64 = "Advanced Micro Devices X86-64"
 ATCD_EXPECTED_ELF_MACHINE:qemuarm64 = "AArch64"
 ATCD_EXPECTED_ELF_MACHINE:tegra234 = "AArch64"
-do_install[file-checksums] += "${ATCD_BINARY_RESOLVED}:True"
+do_compile[nostamp] = "1"
+do_compile() {
+    ATC_TRACK="${ATCD_TRACK}" ATC_DOWNLOAD_ONLY="${B}/atcd" \
+        sh ${WORKDIR}/install-atcd.sh
+}
 do_install() {
-    actual_machine=$(readelf -h "${ATCD_BINARY_RESOLVED}")
+    actual_machine=$(readelf -h "${B}/atcd")
 }
 EOF
 
@@ -214,21 +216,12 @@ make_fixture "$d10"
 sed -i '/chown -R/d' "$d10/meta-atc/recipes-core/images/atc-image.bb"
 expect fail "an SSH key that is never chowned is caught" "$d10"
 
-# 10. A per-machine ATCD_BINARY override. Either variant of that shape is broken
-#     (it drops a plain ATCD_BINARY, or it forms a reference cycle), and no
-#     failure is visible without a Yocto build.
-d11="$tmp/atcd-binary-override"
+# 10. The recipe fetches atcd some other way than install-atcd.sh, so neither
+#     the release signature nor the sha256 is checked.
+d11="$tmp/no-install-script"
 make_fixture "$d11"
-# shellcheck disable=SC2016  # a bitbake variable: the literal is the point
-printf '%s\n' 'ATCD_BINARY:qemux86-64 = "${ATCD_BINARY_X86_64}"' \
-  >> "$d11/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
-expect fail "a per-machine ATCD_BINARY override is caught" "$d11"
-
-# 11. The resolved variable goes missing, so do_install reads an unresolved path.
-d12="$tmp/no-resolved-binary"
-make_fixture "$d12"
-sed -i '/^ATCD_BINARY_RESOLVED/d' "$d12/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
-expect fail "a recipe without ATCD_BINARY_RESOLVED is caught" "$d12"
+sed -i '/ATC_DOWNLOAD_ONLY/d' "$d11/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
+expect fail "a recipe that does not fetch atcd with install-atcd.sh is caught" "$d11"
 
 # 12. A backtick inside a bbfatal message. Those bodies are SHELL, so a backtick
 #     is command substitution: the build would try to RUN the command named in
@@ -273,13 +266,12 @@ sed -i 's|^ATCD_REMOTE_PATH = .*|ATCD_REMOTE_PATH = "/usr/local/bin/atcd"|' \
   "$d15/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
 expect fail "a recipe installing onto the symlink path is caught" "$d15"
 
-# 15. The host binary's bytes are not in the task signature, so a rebuilt binary
-#     at the same path is served stale from sstate and the image ships the OLD
-#     atcd while the build reports success.
-d16="$tmp/no-file-checksums"
+# 15. The download is cached, so a new release never reaches the image and the
+#     build reports success.
+d16="$tmp/no-nostamp"
 make_fixture "$d16"
-sed -i '/do_install\[file-checksums\]/d' "$d16/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
-expect fail "a recipe without do_install[file-checksums] is caught" "$d16"
+sed -i '/do_compile\[nostamp\]/d' "$d16/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
+expect fail "a recipe without do_compile[nostamp] is caught" "$d16"
 
 # 16. The deploy user is put in a `sudo` group. Yocto does not create one, so
 #     useradd fails on an unknown group and the account every push depends on is
