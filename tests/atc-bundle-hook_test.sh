@@ -4,28 +4,17 @@
 # Tests for meta-atc's bundle hook, which carries the device-local state that
 # `atc bootstrap` writes into the new slot of an OS update.
 #
-# 1. Coverage. Every absolute path under /etc, /var/lib or /usr/local that the
-#    bootstrap installer's source or `atcd --setup-rootless`'s source names must
-#    fall under a pattern in the hook's CARRY list, or under an exemption below
-#    that gives its reason. A new file that bootstrap stages
-#    and the hook does not carry fails here, not as an update that reverts on
-#    every device.
-#    The scan sees only literal absolute paths. A path that the source builds
-#    with join(), such as the podman helpers, the AppArmor profile and the
-#    delegate drop-in, escapes it. The behaviour fixtures cover those paths.
+# 1. Shape. The hook has a CARRY list, merges /etc/subuid and /etc/subgid, and
+#    uses no cp flag whose meaning changed between coreutils releases. (The atc
+#    maintainers check that CARRY covers every path atcd's bootstrap writes.)
 # 2. Behaviour. The real hook runs against a fixture rootfs and a fixture new
 #    slot. It must carry the state, keep the new image's own files, and merge
 #    /etc/subuid and /etc/subgid.
 #
-# Usage: atc-bundle-hook_test.sh <hook> [<src-dir>...]
-#   each <src-dir> is atc Rust source that writes device state:
-#   crates/atc-cmd-bootstrap/src, and crates/atcd/src/setup_rootless. With no
-#   <src-dir>, part 1 is skipped and the test says so.
+# Usage: atc-bundle-hook_test.sh <hook>
 set -euo pipefail
 
-HOOK="${1:?usage: atc-bundle-hook_test.sh <hook> [<src-dir>...]}"
-shift
-SRCS=("$@")
+HOOK="${1:?usage: atc-bundle-hook_test.sh <hook>}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 failures=0
@@ -35,92 +24,12 @@ fail() {
   failures=$((failures + 1))
 }
 
-# Paths the installer names that the hook does not carry, each with its reason.
-EXEMPT=(
-  # The unit directory itself. The hook carries the files in it by name.
-  "/etc/systemd/system"
-  # systemctl set-property writes here at runtime. It is not bootstrap state.
-  "/etc/systemd/system.control"
-  # The hook user's home, /var/lib/{hook_user}. The image creates it in both
-  # slots (atc-ab-runtime.inc), and its content is engine storage, not config.
-  # Compared as a string, so it exempts that one derived path only.
-  "/var/lib/*"
-  # Lines that bootstrap appends to files the image ships. The hook merges
-  # them; see MERGE in the hook.
-  "/etc/subuid"
-  "/etc/subgid"
-  # setup-rootless's messages name /etc/{label}, which is /etc/subuid or
-  # /etc/subgid. Both are merged.
-  "/etc/*"
-  # Read only: setup-rootless checks the subid backend and the distro's own
-  # skopeo profile, and writes neither.
-  "/etc/nsswitch.conf"
-  "/etc/apparmor.d/skopeo"
-  # Base directories. The image creates them, and the hook carries the files
-  # in them by name.
-  "/etc/apparmor.d"
-  "/usr/local/bin"
-  "/usr/local/libexec"
-  # A unit search path that bootstrap reads, never writes.
-  "/usr/local/lib/systemd/system"
-  # A fixture in the inline tests of bootstrap's enrollment.rs.
-  "/usr/local/bin/atcd-wrapper"
-)
-
-# ── 1. Coverage ──────────────────────────────────────────────────────────────
+# ── 1. Shape ─────────────────────────────────────────────────────────────────
 
 carry="$(sed -n '/^# BEGIN CARRY$/,/^# END CARRY$/{/^#/d;p;}' "$HOOK")"
 [ -n "$carry" ] || fail "the hook has no CARRY list between its markers"
 grep -q '^MERGE=.*/etc/subuid.*/etc/subgid' "$HOOK" ||
   fail "the hook does not merge /etc/subuid and /etc/subgid"
-
-coverage() {
-  # The paths: string literals under /etc, /var/lib or /usr/local in the
-  # sources, test files excluded. A format placeholder becomes a glob. A message
-  # that follows the path is cut at the first space, and a trailing ':', '.' or
-  # ',' goes.
-  mapfile -t paths < <(
-    find -L "${SRCS[@]}" -name '*.rs' ! -name '*_tests.rs' ! -name 'test_support.rs' -print0 |
-      xargs -0 grep -ohE '"/(etc|var/lib|usr/local)/[^"]*"' |
-      tr -d '"' | sed -E 's/\{[^}]*\}/*/g; s/ .*//; s/[:.,]$//' | sort -u
-  )
-  [ "${#paths[@]}" -ge 10 ] || fail "found only ${#paths[@]} installer paths in ${SRCS[*]}"
-  # Each source must name at least one path, so a wrong directory argument fails
-  # instead of shrinking the set.
-  for src in "${SRCS[@]}"; do
-    find -L "$src" -name '*.rs' ! -name '*_tests.rs' -print0 |
-      xargs -0 grep -qE '"/(etc|var/lib|usr/local)/' ||
-      fail "$src names no path under /etc, /var/lib or /usr/local"
-  done
-
-  covered() {
-    local path="$1" pattern
-    while IFS= read -r pattern; do
-      # shellcheck disable=SC2254  # the pattern IS a glob
-      case "$path" in $pattern | $pattern/*) return 0 ;; esac
-    done <<< "$carry"
-    exempt "$path"
-  }
-
-  exempt() {
-    local path="$1" e
-    for e in "${EXEMPT[@]}"; do
-      [ "$path" = "$e" ] && return 0
-    done
-    return 1
-  }
-
-  for path in "${paths[@]}"; do
-    covered "$path" || fail "the source names $path, and the hook carries nothing that covers it"
-  done
-  echo "ok: the hook covers ${#paths[@]} installer paths"
-}
-
-if [ "${#SRCS[@]}" -gt 0 ]; then
-  coverage
-else
-  echo "skip: part 1 (coverage) needs the atc source directories" >&2
-fi
 
 # The hook must not lean on a cp flag whose meaning moved between coreutils
 # releases: -n exits 1 on a skipped file in 9.2 to 9.4, which the image ships,

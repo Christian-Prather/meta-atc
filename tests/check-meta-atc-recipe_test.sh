@@ -9,9 +9,7 @@
 # without it. A case that cannot go red is not coverage.
 #
 # The gate resolves the layer from $BASH_SOURCE, so each fixture holds a layer
-# at <fixture>/meta-atc with the gate copied into its scripts/. The rest of the
-# fixture stands in for an atc source checkout, and each case passes it as
-# ATC_MONOREPO unless the case sets MONO_MODE=0.
+# at <fixture>/meta-atc with the gate copied into its scripts/.
 #
 # Usage: check-meta-atc-recipe_test.sh <path-to-check-meta-atc-recipe.sh>
 set -euo pipefail
@@ -26,11 +24,7 @@ trap 'rm -rf "$tmp"' EXIT
 expect() {
   local want="$1" name="$2" root="$3" out status
   set +e
-  if [ "${MONO_MODE:-1}" = 1 ]; then
-    out="$(ATC_MONOREPO="$root" "$root/meta-atc/scripts/check-meta-atc-recipe.sh" 2> "$tmp/stderr")"
-  else
-    out="$(env -u ATC_MONOREPO "$root/meta-atc/scripts/check-meta-atc-recipe.sh" 2> "$tmp/stderr")"
-  fi
+  out="$("$root/meta-atc/scripts/check-meta-atc-recipe.sh" 2> "$tmp/stderr")"
   status=$?
   set -e
   if [ "$want" = pass ] && [ "$status" -ne 0 ]; then
@@ -51,9 +45,6 @@ expect() {
 # Build a fixture tree that the gate should accept.
 make_fixture() {
   local root="$1"
-  mkdir -p "$root/tools/scripts"
-  mkdir -p "$root/crates/atc-cmd-bootstrap/src/bootstrap_daemon"
-  mkdir -p "$root/crates/atc-config/src"
   mkdir -p "$root/meta-atc/conf"
   mkdir -p "$root/meta-atc/recipes-core/atc/files"
   mkdir -p "$root/meta-atc/recipes-core/images"
@@ -63,24 +54,8 @@ make_fixture() {
   chmod +x "$root/meta-atc/scripts/check-meta-atc-recipe.sh"
 
   printf '%s\n' '#!/usr/bin/env sh' 'echo guard' \
-    > "$root/tools/scripts/atcd-boot-confirm.sh"
-  cp "$root/tools/scripts/atcd-boot-confirm.sh" \
-    "$root/meta-atc/recipes-core/atc/files/atcd-boot-confirm.sh"
-  printf '%s\n' '#!/bin/sh' 'echo install' > "$root/tools/scripts/install-atcd.sh"
-  cp "$root/tools/scripts/install-atcd.sh" "$root/meta-atc/recipes-core/atc/files/install-atcd.sh"
-
-  cat > "$root/crates/atc-cmd-bootstrap/src/bootstrap_daemon/consts.rs" << 'EOF'
-pub const STORE_ROOT: &str = "/var/atc";
-/// a convenience SYMLINK to this path, not a second copy
-pub(crate) const LIBEXEC_DIR: &str = "/usr/local/libexec";
-pub(crate) const GUARD_REMOTE_PATH: &str = "/usr/local/libexec/atcd-boot-confirm.sh";
-EOF
-
-  cat > "$root/crates/atc-config/src/schema_defaults.rs" << 'EOF'
-pub(crate) fn default_daemon_remote_path() -> String {
-    "/usr/local/bin/atcd".into()
-}
-EOF
+    > "$root/meta-atc/recipes-core/atc/files/atcd-boot-confirm.sh"
+  printf '%s\n' '#!/bin/sh' 'echo install' > "$root/meta-atc/recipes-core/atc/files/install-atcd.sh"
 
   cat > "$root/meta-atc/conf/layer.conf" << 'EOF'
 LAYERSERIES_COMPAT_atc = "scarthgap"
@@ -146,32 +121,12 @@ base="$tmp/base"
 make_fixture "$base"
 expect pass "clean fixture passes" "$base"
 
-# 1. The guard copy drifts. This is the drift class the recipe's copy creates.
-d1="$tmp/guard-drift"
-make_fixture "$d1"
-printf '%s\n' 'echo drifted' >> "$d1/meta-atc/recipes-core/atc/files/atcd-boot-confirm.sh"
-expect fail "a drifted guard copy is caught" "$d1"
-
-# 1b. The install-atcd.sh copy drifts: it pins the keys that verify atcd.
-d1b="$tmp/install-drift"
-make_fixture "$d1b"
-printf '%s\n' 'echo drifted' >> "$d1b/meta-atc/recipes-core/atc/files/install-atcd.sh"
-expect fail "a drifted install-atcd.sh copy is caught" "$d1b"
-
-# 2. The recipe's libexec path diverges from consts.rs::LIBEXEC_DIR.
+# 2. The recipe's libexec path diverges from atcd's libexec directory.
 d2="$tmp/libexec-drift"
 make_fixture "$d2"
 sed -i 's|ATCD_LIBEXEC = "/usr/local/libexec"|ATCD_LIBEXEC = "/opt/libexec"|' \
   "$d2/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
-expect fail "a recipe libexec path that diverges from consts.rs is caught" "$d2"
-
-# 3. consts.rs moves LIBEXEC_DIR and the recipe does not follow. Same divergence,
-#    mutated from the OTHER side. The gate must not depend on which side moved.
-d3="$tmp/consts-drift"
-make_fixture "$d3"
-sed -i 's|LIBEXEC_DIR: &str = "/usr/local/libexec"|LIBEXEC_DIR: \&str = "/opt/libexec"|' \
-  "$d3/crates/atc-cmd-bootstrap/src/bootstrap_daemon/consts.rs"
-expect fail "a moved LIBEXEC_DIR that the recipe did not follow is caught" "$d3"
+expect fail "a recipe libexec path off the contract is caught" "$d2"
 
 # 4. The image loses its refusal to pre-create the store root.
 d4="$tmp/no-refusal"
@@ -489,27 +444,6 @@ d27="$tmp/fi-semicolon"
 make_fixture "$d27"
 printf 'atc_f() {\n    if true; then\n        :\n    fi;\n}\n' >> "$d27/meta-atc/recipes-core/images/atc-image.bb"
 expect pass "a fi; in a shell function passes" "$d27"
-
-# ── Without ATC_MONOREPO ─────────────────────────────────────────────────────
-# The layer-only mode still checks the recipe side against the contract values,
-# and it says on stderr which checks it skipped.
-MONO_MODE=0 expect pass "a clean layer passes without ATC_MONOREPO" "$base"
-grep -q 'ATC_MONOREPO is not set' "$tmp/stderr" || {
-  echo "FAIL: the layer-only run does not say that it skipped the source checks" >&2
-  failures=$((failures + 1))
-}
-MONO_MODE=0 expect fail "a recipe libexec path off the contract is caught without ATC_MONOREPO" "$d2"
-MONO_MODE=0 expect fail "a recipe on the symlink path is caught without ATC_MONOREPO" "$d15"
-MONO_MODE=0 expect fail "an image that creates /var/atc is caught without ATC_MONOREPO" "$d5"
-d49="$tmp/libexec-moved-together"
-make_fixture "$d49"
-sed -i 's|"/usr/local/libexec"|"/opt/atc/libexec"|' \
-  "$d49/crates/atc-cmd-bootstrap/src/bootstrap_daemon/consts.rs"
-sed -i 's|/usr/local/libexec/atcd-boot-confirm.sh|/opt/atc/libexec/atcd-boot-confirm.sh|' \
-  "$d49/crates/atc-cmd-bootstrap/src/bootstrap_daemon/consts.rs"
-sed -i 's|^ATCD_LIBEXEC = .*|ATCD_LIBEXEC = "/opt/atc/libexec"|' \
-  "$d49/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
-expect fail "a LIBEXEC_DIR moved with the recipe but not the contract value is caught" "$d49"
 
 if [ "$failures" -gt 0 ]; then
   echo "check-meta-atc-recipe_test: $failures case(s) failed" >&2

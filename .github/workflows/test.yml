@@ -1,12 +1,8 @@
 name: test
 
 # Run tests/run.sh: the repository gates, their self-tests, the self-test of
-# each builder-box driver, the tests of the on-device scripts, and the model
-# check of the nvbootctrl backend. No Yocto build runs here.
-#
-# The checks that compare this layer with the atc source do not run here.
-# They need a checkout of that source, and this job has no credential to read
-# one (README, "Test").
+# each build driver, the tests of the on-device scripts, and the model check of
+# the nvbootctrl backend. No Yocto build runs here.
 
 on:
   push:

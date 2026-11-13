@@ -38,7 +38,6 @@ python __anonymous() {
 # The deploy account the controller logs in as. It must be in the `atc` group,
 # which the atcd service user owns: `atcd attach` execs the store-managed binary
 # as this user, and every store directory is group-traversable, not world.
-# See consts.rs::grant_traverse_snippet.
 ATC_DEPLOY_USER ?= "atc-deploy"
 
 # A FIXED uid. An OS update carries the deploy user's ~/.ssh into the new slot,
@@ -113,7 +112,7 @@ atc_refuse_prebuilt_store_root() {
     if [ -e "${IMAGE_ROOTFS}/var/atc" ]; then
         bbfatal "/var/atc exists in the rootfs. It must be created by \
 'atcd install-self' on the device, not baked into the image: a 0700 store root \
-breaks 'atcd attach' with EACCES. See consts.rs::grant_traverse_snippet."
+breaks 'atcd attach' with EACCES."
     fi
 }
 

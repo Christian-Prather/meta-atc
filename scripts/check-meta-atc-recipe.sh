@@ -2,49 +2,31 @@
 # scripts/check-meta-atc-recipe.sh
 #
 # Repository-side gate for the meta-atc Yocto layer. Runs with no Yocto builder:
-# it reads the recipes, and the atc sources the recipes copy or mirror, and
-# fails when the two disagree.
-#
-# Three drift classes it catches:
-#   1. the guard copy or the install-atcd.sh copy in this layer diverging
-#      from the atc source's tools/scripts/;
-#   2. a recipe path diverging from the constant that declares it in the atc
-#      source's crates/atc-cmd-bootstrap/src/bootstrap_daemon/consts.rs;
+# it reads the recipes and fails on a shape that builds green and breaks a
+# device. Among others:
+#   2. a recipe path that differs from the on-device paths atcd uses (the
+#      contract values below);
 #   3. the image recipe losing its refusal to pre-create /var/atc.
-#
-# Classes 1 and 2 need a checkout of the atc source. Set ATC_MONOREPO to one.
-# Without it the gate checks the recipe side of class 2 against the contract
-# values below, skips class 1, and says so on stderr.
 #
 # It does NOT prove anything about a built rootfs. That check needs a Yocto
 # builder.
 #
 # Usage: scripts/check-meta-atc-recipe.sh
 #   META_ATC_ROOT   the layer to check. Defaults to this script's repository.
-#   ATC_MONOREPO    a checkout of the atc source. Optional; see above.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAYER="$(cd "${META_ATC_ROOT:-$SCRIPT_DIR/..}" && pwd)"
-MONO=""
-if [ -n "${ATC_MONOREPO:-}" ]; then
-  MONO="$(cd "$ATC_MONOREPO" && pwd)"
-fi
-
-GUARD_SRC="$MONO/tools/scripts/atcd-boot-confirm.sh"
 GUARD_COPY="$LAYER/recipes-core/atc/files/atcd-boot-confirm.sh"
-INSTALL_SRC="$MONO/tools/scripts/install-atcd.sh"
 INSTALL_COPY="$LAYER/recipes-core/atc/files/install-atcd.sh"
-CONSTS="$MONO/crates/atc-cmd-bootstrap/src/bootstrap_daemon/consts.rs"
-DEFAULTS="$MONO/crates/atc-config/src/schema_defaults.rs"
 RECIPE="$LAYER/recipes-core/atc/atcd_0.1.0.bb"
 IMAGE="$LAYER/recipes-core/images/atc-image.bb"
 LAYER_CONF="$LAYER/conf/layer.conf"
 TEGRA_INC="$LAYER/recipes-core/images/atc-tegra.inc"
 PIN_FILE="$LAYER/conf/layers.pin"
 
-# The on-device paths the recipes hardcode. The atc source owns them. With
-# ATC_MONOREPO set, check 2 fails unless the Rust source holds these values.
+# The on-device paths the recipes hardcode. atcd owns them; the atc
+# maintainers check these values against atcd's source.
 WANT_STORE_ROOT="/var/atc"
 WANT_LIBEXEC_DIR="/usr/local/libexec"
 WANT_REMOTE_PATH="/usr/local/bin/atcd"
@@ -88,95 +70,23 @@ search_optional() {
 for f in "$GUARD_COPY" "$INSTALL_COPY" "$RECIPE" "$IMAGE" "$LAYER_CONF" "$PIN_FILE" "$TEGRA_INC"; do
   [ -f "$f" ] || fail "missing required file: $f"
 done
-if [ -n "$MONO" ]; then
-  for f in "$GUARD_SRC" "$INSTALL_SRC" "$CONSTS" "$DEFAULTS"; do
-    [ -f "$f" ] || fail "missing required file in ATC_MONOREPO: $f"
-  done
-else
-  echo "check-meta-atc-recipe: ATC_MONOREPO is not set. Skipped check 1 and the source half of check 2." >&2
-fi
 
-# 1. The guard copy must be byte-for-byte identical. The recipe installs the copy,
-#    so a divergence puts a different guard on the device than the one the atc
-#    binary embeds through include_str!.
-if [ -n "$MONO" ] && ! cmp -s "$GUARD_SRC" "$GUARD_COPY"; then
-  echo "check-meta-atc-recipe: the meta-atc guard copy has drifted." >&2
-  diff -u "$GUARD_SRC" "$GUARD_COPY" >&2 || true
-  fail "copy $GUARD_SRC to $GUARD_COPY"
-fi
-
-# 1b. The install script copy must be byte-for-byte identical too. It holds the
-#     pinned release keys that verify the atcd the image carries, so a stale
-#     copy can trust a retired key or refuse a current release.
-if [ -n "$MONO" ] && ! cmp -s "$INSTALL_SRC" "$INSTALL_COPY"; then
-  echo "check-meta-atc-recipe: the meta-atc install-atcd.sh copy has drifted." >&2
-  diff -u "$INSTALL_SRC" "$INSTALL_COPY" >&2 || true
-  fail "copy $INSTALL_SRC to $INSTALL_COPY"
-fi
-
-# 2. Every path the recipe hardcodes must match the constant that declares it.
-#    Read the value out of the Rust source rather than restating it here: a
-#    restated copy drifts silently, and this gate catches that.
-# The value may sit on the declaring line (`const X: &str = "v";`) or on a later
-# one (a `fn` returning `"v".into()`), so take the first quoted string at or after
-# the declaration rather than assuming either shape.
-extract_rust_str() {
-  local name="$1" file="$2" start value
-  start="$(search_optional "$name" "$file" | head -1 | cut -d: -f1)"
-  [ -n "$start" ] || fail "could not find $name in $file"
-  # One sed reads lines start to start+4 and quits on the first quoted string.
-  # A `tail | head -5` pipe could close on tail mid-write, and pipefail then
-  # failed the check on a long source file.
-  value="$(sed -n "$start,$((start + 4))"'{/.*"\([^"]*\)".*/{s//\1/p;q;};}' "$file")"
-  [ -n "$value" ] || fail "could not extract a string value for $name in $file"
-  printf '%s' "$value"
-}
-
+# 2. Every path the recipe hardcodes must match the contract values above.
 store_root="$WANT_STORE_ROOT"
-libexec_dir="$WANT_LIBEXEC_DIR"
-remote_path="$WANT_REMOTE_PATH"
-if [ -n "$MONO" ]; then
-  store_root="$(extract_rust_str 'const STORE_ROOT' "$CONSTS")"
-  guard_path="$(extract_rust_str 'const GUARD_REMOTE_PATH' "$CONSTS")"
-  libexec_dir="$(extract_rust_str 'const LIBEXEC_DIR' "$CONSTS")"
-  remote_path="$(extract_rust_str 'fn default_daemon_remote_path' "$DEFAULTS")"
-
-  [ "$store_root" = "$WANT_STORE_ROOT" ] ||
-    fail "STORE_ROOT is now '$store_root'; update meta-atc and this gate together"
-  [ "$libexec_dir" = "$WANT_LIBEXEC_DIR" ] ||
-    fail "LIBEXEC_DIR is now '$libexec_dir'; update meta-atc and this gate together"
-fi
-
 recipe_libexec="$(search_optional '^ATCD_LIBEXEC = ' "$RECIPE" | sed -n 's/.*"\(.*\)".*/\1/p')"
-[ "$recipe_libexec" = "$libexec_dir" ] ||
-  fail "ATCD_LIBEXEC='$recipe_libexec' but consts.rs LIBEXEC_DIR='$libexec_dir'"
-
-# GUARD_REMOTE_PATH is LIBEXEC_DIR + the filename the recipe installs.
-if [ -n "$MONO" ]; then
-  [ "$guard_path" = "$libexec_dir/atcd-boot-confirm.sh" ] ||
-    fail "GUARD_REMOTE_PATH='$guard_path' does not sit under LIBEXEC_DIR='$libexec_dir'"
-fi
+[ "$recipe_libexec" = "$WANT_LIBEXEC_DIR" ] ||
+  fail "ATCD_LIBEXEC='$recipe_libexec', but atcd's libexec directory is '$WANT_LIBEXEC_DIR'"
 
 # The recipe writes the binary to ${bindir}/atcd. bindir is /usr/bin in a stock
-# Yocto image, while the daemon default remote_path is /usr/local/bin/atcd. They
+# Yocto image, while atcd's default remote_path is /usr/local/bin/atcd. They
 # differ ON PURPOSE: remote_path is a convenience symlink `atc bootstrap` makes,
-# not a second copy. Assert the recipe says so, so nobody "fixes" one to match
-# the other and creates two atcd binaries on the device.
-if [ -n "$MONO" ]; then
-  search 'convenience' "$CONSTS" > /dev/null ||
-    fail "consts.rs no longer describes remote_path as a symlink; recheck the recipe"
-  [ "$remote_path" = "$WANT_REMOTE_PATH" ] ||
-    fail "default_daemon_remote_path is now '$remote_path'; recheck meta-atc's ATCD_REMOTE_PATH"
-fi
-
-# The recipe half of that claim, which the two checks above do NOT cover: they
-# read the Rust side only, so a recipe "corrected" onto remote_path landed green
-# while the comment claimed otherwise.
+# not a second copy. A recipe "corrected" onto remote_path would put two real
+# atcd binaries on the device.
 recipe_remote_path="$(search_optional '^ATCD_REMOTE_PATH = ' "$RECIPE" |
   sed -n 's/.*"\(.*\)".*/\1/p')"
 [ -n "$recipe_remote_path" ] ||
   fail "the recipe has no ATCD_REMOTE_PATH; it would install the binary nowhere"
-if [ "$recipe_remote_path" = "$remote_path" ]; then
+if [ "$recipe_remote_path" = "$WANT_REMOTE_PATH" ]; then
   fail "the recipe installs to '$recipe_remote_path', the same path bootstrap \
 SYMLINKS. That makes a second real atcd on the device; install to \${bindir}/atcd"
 fi

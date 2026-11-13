@@ -20,9 +20,8 @@ INHIBIT_PACKAGE_STRIP = "1"
 INHIBIT_PACKAGE_DEBUG_SPLIT = "1"
 INHIBIT_SYSROOT_STRIP = "1"
 
-# The guard and install-atcd.sh are byte-for-byte copies of the atc source's
-# tools/scripts/. scripts/check-meta-atc-recipe.sh fails if a copy differs,
-# when ATC_MONOREPO names a checkout of that source.
+# The guard and install-atcd.sh are copies of atc's own scripts. The atc
+# maintainers keep them byte-for-byte equal to the originals.
 SRC_URI = "file://atcd-boot-confirm.sh file://install-atcd.sh"
 
 ATCD_TRACK ?= "stable"
@@ -39,11 +38,10 @@ ATCD_EXPECTED_ELF_MACHINE:qemux86-64 = "Advanced Micro Devices X86-64"
 ATCD_EXPECTED_ELF_MACHINE:qemuarm64 = "AArch64"
 ATCD_EXPECTED_ELF_MACHINE:tegra234 = "AArch64"
 
-# Paths the running system uses. These mirror
-# crates/atc-cmd-bootstrap/src/bootstrap_daemon/consts.rs and must not drift:
-#   LIBEXEC_DIR       = "/usr/local/libexec"        (consts.rs)
-#   GUARD_REMOTE_PATH = "/usr/local/libexec/atcd-boot-confirm.sh"
-#   remote_path       = "/usr/local/bin/atcd"       (schema_defaults.rs)
+# Paths the running system uses. They must match what atcd expects:
+#   libexec directory  /usr/local/libexec
+#   guard              /usr/local/libexec/atcd-boot-confirm.sh
+#   remote_path        /usr/local/bin/atcd, a symlink that bootstrap makes
 ATCD_LIBEXEC = "/usr/local/libexec"
 ATCD_GUARD_PATH = "${ATCD_LIBEXEC}/atcd-boot-confirm.sh"
 ATCD_REMOTE_PATH = "${bindir}/atcd"
@@ -126,7 +124,6 @@ readelf reports '${actual_machine}', expected '${ATCD_EXPECTED_ELF_MACHINE}'."
 # Deliberately NOT created here. `atcd install-self` creates /var/atc with the
 # modes the traverse-grant walk expects; a hardened image umask of 077 otherwise
 # produces 0700 directories and breaks `atcd attach` with EACCES.
-# See consts.rs::grant_traverse_snippet.
 FILES:${PN} = "${ATCD_GUARD_PATH} ${ATCD_REMOTE_PATH}"
 
 # The release binary is a static musl ELF: it has no dynamic dependencies for
