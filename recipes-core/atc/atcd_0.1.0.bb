@@ -25,8 +25,7 @@ SRC_URI = "file://atcd-boot-confirm.sh"
 # seed the binary. do_install FAILS on an architecture mismatch. Without that
 # check a wrong-architecture ELF still builds green.
 # Two ways to point at a binary, and BOTH must work:
-#   * ATCD_BINARY: one build, one machine. The simple case, and what a reader
-#     of the README reaches for first.
+#   * ATCD_BINARY: one build, one machine. The simple case.
 #   * ATCD_BINARY_X86_64 / ATCD_BINARY_AARCH64: one local.conf serving both
 #     machines, each picked up by the matching architecture.
 #
