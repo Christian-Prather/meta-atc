@@ -4,7 +4,8 @@ the ESP and sets bit 2 of OsIndications. The capsule writes the inactive boot \
 chain and switches to it, and the rootfs slot follows, so the firmware and the \
 rootfs of one bundle go live together. The bundle hook stages. The RAUC \
 nvbootctrl backend arms, as the last step of set-primary."
-LICENSE = "CLOSED"
+LICENSE = "MIT"
+LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
 COMPATIBLE_MACHINE = "(tegra)"
 

@@ -19,5 +19,5 @@ python () {
         raise bb.parse.SkipRecipe(
             "ATC_RAUC_UNTRUSTED_KEY_FILE and ATC_RAUC_UNTRUSTED_CERT_FILE must "
             "name the untrusted test key, set in local.conf. "
-            "cloud/yocto-builder/rauc-test-keys.sh writes it.")
+            "scripts/rauc-test-keys.sh writes it.")
 }

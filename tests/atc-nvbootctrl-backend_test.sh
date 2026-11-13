@@ -557,7 +557,7 @@ expect_ok "scenario abort: the cold boot leaves B on trial" \
   "atc-nvbootctrl-backend: boot: trial in flight, slot B"
 expect_state "scenario abort: B is not made steady" "steady=A trial=B ok=0"
 
-# S1: B failed over and the boot unit's write failed, so the state still says
+# B failed over and the boot unit's write failed, so the state still says
 # steady=A while A is 0xFF and B runs. An install of A must start a trial of
 # A over B, with B as the steady slot.
 init B B unbootable normal "$STEADY_A"
@@ -633,7 +633,7 @@ for fault in set-active-boot-slot verify; do
   backend boot
   # A warm reboot, then a panic before the boot unit. B is 0xFF, so the panic
   # may reach the recovery kernel: an early panic on the only bootable slot is
-  # the cost the design records. B must never become steady.
+  # a known cost. B must never become steady.
   reset_board
   "$tmp/bin/nvbootctrl" fake-boot 2> /dev/null || true
   backend boot
@@ -1478,7 +1478,7 @@ expect_ok "no capsule: set-primary B" ""
 expect_fake "no capsule: nvbootctrl's next boot is B" active 1
 [ "$(osind_low)" = absent ] || fail_case "no capsule: set-primary B wrote OsIndications"
 
-# ── Final review of S3: the capsule path and the boot unit's exits ────────
+# ── The capsule path and the boot unit's exits ───────────────────────────────
 
 # P1-1: the spent row marks the spent trial unbootable. Here the capsule
 # install wrote B normal, and UEFI did not apply the capsule: the reset kept
@@ -1569,7 +1569,7 @@ mv "$tmp/mountinfo.saved" "$tmp/mountinfo"
 grep -q 'set-active-boot-slot' "$state/calls" &&
   fail_case "set-primary with the ESP unmounted switched the chain: $(cat "$state/calls")"
 
-# ── Third review of S3 ────────────────────────────────────────────────────
+# ── More capsule cases ──────────────────────────────────────────────────────
 
 # PRRT_kwDOSV4xDc62Y9xV: the spent row marks the spent trial unbootable
 # BEFORE its verify. A capsule that UEFI did not apply leaves B normal with a

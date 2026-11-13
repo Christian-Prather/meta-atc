@@ -2,9 +2,9 @@
 #
 # The L4T tarball ships tegrahost_v2, tegrabct_v2, tegrasign_v2 and the other
 # flash tools as 32-bit i386 executables, statically linked. The capsule
-# (tegra-uefi-capsules) and the tegraflash image run them at build time. The
-# builder box is an arm64 Graviton, where the kernel refuses them with "Exec
-# format error".
+# (tegra-uefi-capsules) and the tegraflash image run them at build time. On an
+# arm64 build host, such as an AWS Graviton instance, the kernel refuses them
+# with "Exec format error".
 #
 # On an aarch64 build host, this append renames each i386 or x86-64 tool to
 # <tool>.real and installs a wrapper under the tool's own name. The wrapper
@@ -13,7 +13,7 @@
 # sysroot. qemu-native is a native dependency, so it is in the sysroot of each
 # recipe that uses these tools. The host needs no binfmt_misc entry.
 #
-# Measured on the builder box (c7g, Amazon Linux 2023) on 2026-11-11: each of
+# Measured on an arm64 Amazon Linux 2023 build host on 2026-11-11: each of
 # the six *_v2 tools printed its usage text under qemu-native's qemu-i386.
 # Amazon Linux's qemu-user-static-x86 ships qemu-x86_64 only, not qemu-i386.
 #

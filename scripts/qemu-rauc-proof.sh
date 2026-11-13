@@ -7,7 +7,7 @@
 # check that RAUC marks it good. Then reboot twice more. The first reboot after
 # the mark confirms the slot, and the second boots it as the steady slot.
 #
-# Run this ON THE BUILDER BOX, as the build user.
+# Run this on the build host, as the build user.
 #
 # THE DISCRIMINATING CHECKS. Only grub.cfg writes `rauc.slot=` on the kernel
 # command line, and only the bundle's slot image carries /etc/atc-os-version.
@@ -40,10 +40,10 @@
 #   --no-boot           build and assert only.
 #   --self-test         check this script's logic. Needs no box.
 #
-# Required on the box: poky (POKY_DIR, default <cache>/poky), the cache config
+# Required on the build host: poky (POKY_DIR, default <cache>/poky), the cache config
 # from cache-setup.sh, a running yocto-hashserv, and the RAUC test keys in
 # KEY_DIR (default <cache>/atc-rauc-keys). The atcd recipe downloads a verified
-# atcd with install-atcd.sh, so the box needs network access to atc.dev. To
+# atcd with install-atcd.sh, so the build host needs network access to atc.dev. To
 # build in a local atcd instead, set ATCD_BINARY to a static x86-64 binary. check_keys below names each key file.
 set -euo pipefail
 

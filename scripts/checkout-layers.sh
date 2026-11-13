@@ -3,7 +3,7 @@
 #
 # Check out the layers that conf/layers.pin names, each at its pinned
 # commit, under <cache>/layers/<name>. Print one checked-out path per line on
-# stdout. Run this ON THE BOX, as the build user. The proof scripts run it.
+# stdout. Run it on the build host, as the build user. The proof scripts run it.
 #
 # WHY A PIN AND NOT A BRANCH. A branch moves under a build, so two builds of one
 # tree would differ with nothing in the tree to say why. The pin is 40 hex
@@ -57,7 +57,7 @@ read_pins() {
   done < "$file"
 }
 
-# The checkout may belong to root, which cloned it over SSM. Reading it as the
+# The checkout may belong to root, for example after a copy by root. Reading it as the
 # build user then trips git's ownership check, so the read names it safe.
 head_of() {
   git -c safe.directory="$1" -C "$1" rev-parse HEAD 2> /dev/null || true

@@ -12,7 +12,8 @@
 #   factory flash writes a fresh filesystem to UDA.
 #
 # The edit is on the installed copy, so no NVIDIA layout file is copied into
-# this layer. It acts on an NVMe layout only, the layout of the farm board.
+# this layer. It acts on an NVMe layout only, for example the layout of
+# jetson-orin-nano-devkit-nvme.
 # For any other layout it warns, so the build log shows that the store stays
 # at the layout's own size. On an NVMe layout it fails the build when UDA is
 # missing or not one partition: a silent no-op would ship a 400 MiB store.

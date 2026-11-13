@@ -323,7 +323,7 @@ mutate "an nvbootctrl conf with a grubenv is caught" "$TEGRA_CONF_REL" \
 mutate "an nvbootctrl slot B on the wrong partition is caught" "$TEGRA_CONF_REL" \
   's|by-partlabel/APP_b|by-partlabel/APP|' "by-partlabel/APP_b"
 
-# The Tegra store on UDA, and the redundant layout with the capsule (S3).
+# The Tegra store on UDA, and the redundant layout with the capsule.
 mutate "a Tegra store without the UDA mount is caught" "$RUNTIME_REL" \
   '/^PARTLABEL=UDA /d' "no PARTLABEL=UDA on /var/atc"
 mutate "a UDA mount without growfs is caught" "$RUNTIME_REL" \

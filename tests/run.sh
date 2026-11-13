@@ -44,7 +44,7 @@ run "A/B layout gate, real layer" env META_ATC_ROOT="$ROOT" bash "$ROOT/scripts/
 run "A/B layout gate, self-test" bash "$ROOT/tests/check-atc-ab-layout_test.sh" \
   "$ROOT/scripts/check-atc-ab-layout.sh" "$ROOT"
 
-for s in checkout-layers qemu-rauc-proof qemu-rauc-faults tegra-build tegra-proof-artifacts; do
+for s in checkout-layers rauc-test-keys qemu-rauc-proof qemu-rauc-faults tegra-build tegra-proof-artifacts; do
   run "$s --self-test" bash "$ROOT/scripts/$s.sh" --self-test
 done
 

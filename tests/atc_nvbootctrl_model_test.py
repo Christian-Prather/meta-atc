@@ -36,13 +36,13 @@ Environment: ATC_NVBOOTCTRL_BACKEND and ATC_NVBOOTCTRL_FAKE name the two
 scripts. ATC_NVBOOTCTRL_MODEL_DEPTH sets the depth (default 4). Depth 4 is the
 least that finds the set-primary order of round 3.
 
-ATC_NVBOOTCTRL_MODEL_CAPSULE=1 adds the UEFI capsule of S3. A fake
+ATC_NVBOOTCTRL_MODEL_CAPSULE=1 adds the UEFI capsule. A fake
 atc-tegra-capsule keeps the staged slot and bit 2 of OsIndications. An install
 stages a capsule for its slot before set-primary, as the bundle hook does. A
 reset with an armed capsule applies it, as UEFI does: the chain that did not
 boot becomes active, and the bit and the file go. A "capsule rejected" event
-resets with the bit cleared and the chain unchanged. The final review of S3
-found two defects on this path that the model without it could not reach.
+resets with the bit cleared and the chain unchanged. The model found two
+defects on this path that the model without it could not reach.
 
 A trial whose partner is marked unbootable has no revert target, so it is not
 UNCONFIRMED_RUNS_NO_DEADLINE: a deadline there would only reboot into the same
@@ -50,8 +50,8 @@ slot. The backend reports no trial in flight for it.
 
 With the capsule, a "capsule rejected" event also sets a ghost on the slot of
 the rejected capsule: its rootfs never got its firmware. A reset that boots
-that slot before an install writes it again is REJECTED_IMAGE_BOOTS. The third
-review of S3 found a verify give-up that fell over into it. A crash or a panic
+that slot before an install writes it again is REJECTED_IMAGE_BOOTS. A review
+found a verify give-up that fell over into it. A crash or a panic
 before the boot unit completes is not counted: until the unit's spent row runs,
 the slot is normal with a count, as set-primary left it for the capsule, and
 nothing on the board can mark it sooner. That is a cost of the capsule as the

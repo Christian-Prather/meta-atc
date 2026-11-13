@@ -2,8 +2,8 @@
 # scripts/tegra-proof-artifacts.sh
 #
 # Collect the Orin hardware-proof artifacts from a Tegra build into one
-# directory, under fixed names, with a SHA256SUMS file. The farm flash host
-# (cloud/farm-provisioning/jetson-flash-host.sh) reads them by these names:
+# directory, under fixed names, with a SHA256SUMS file. A hardware proof reads
+# them by these names:
 #
 #   tegraflash.tar.gz  atc-image-ab-<machine>.rootfs.tegraflash.tar.gz, the
 #                      factory image (APP and APP_b)
@@ -21,7 +21,7 @@
 # signature the CA verifies, the compatible atc-<machine>, and a tegra-bl.cap,
 # and the three bundles carry the same capsule.
 #
-# Run it ON THE BUILDER BOX after:
+# Run it on the build host after:
 #   bitbake atc-image-ab atc-bundle atc-bundle-panic atc-bundle-hang
 #
 # Usage:

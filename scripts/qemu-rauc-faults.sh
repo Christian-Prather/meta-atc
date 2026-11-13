@@ -14,20 +14,20 @@
 # See BRANCHES below.
 #
 # WHERE IT RUNS. On a workstation with /dev/kvm the guest runs under KVM. On the
-# arm64 builder box it runs under TCG, and every timeout is multiplied by
-# TCG_FACTOR. The images come from the box: run --build there, then copy the
-# images directory to the workstation.
+# arm64 build host it runs under TCG, and every timeout is multiplied by
+# TCG_FACTOR. Run --build on the build host, then copy the images directory to
+# the workstation.
 #
 # Usage:
 #   ./qemu-rauc-faults.sh --build [--build-dir <path>] [--images <dir>]
-#       ON THE BOX, as the build user. Build the A/B disk and every bundle the
+#       On the build host, as the build user. Build the A/B disk and every bundle the
 #       cases need, then stage them in <dir> (default <cache>/rauc-faults/images)
 #       with a SHA256SUMS file.
 #   ./qemu-rauc-faults.sh --images <dir> [--out <dir>] [--accel kvm|tcg]
 #                         [--case <name>]... [--keep-disks]
 #       Run the cases, all of them unless --case names some.
 #   ./qemu-rauc-faults.sh --list
-#   ./qemu-rauc-faults.sh --self-test       needs no box and no KVM
+#   ./qemu-rauc-faults.sh --self-test       needs no build and no KVM
 #
 #   --out <dir>    where each case's logs go. Default
 #                  ${XDG_CACHE_HOME:-~/.cache}/atc-rauc-faults/<timestamp>. Not
@@ -104,7 +104,7 @@ BUNDLES=(
 
 # The cases, in run order: name | bundles | fidelity | expected.
 #
-# Fidelity is the design's "Faithful?" column. `approximation` cases model the
+# Fidelity says how close a case is to the real fault. `approximation` cases model the
 # fault, and the output says so. `recorded` is a case whose result is a stated
 # behaviour, not a pass.
 CASE_TABLE=(
@@ -822,14 +822,14 @@ print_results() {
 
 check_images() {
   local f row
-  [ -n "$IMAGES_DIR" ] || die "--images <dir> is required. On the box, run --build first; on a workstation, run fetch-images.sh"
+  [ -n "$IMAGES_DIR" ] || die "--images <dir> is required. Run --build on the build host first, then copy its images directory here"
   for f in disk.wic ovmf.code.qcow2 ovmf.vars.qcow2; do
     [ -f "$IMAGES_DIR/$f" ] || die "missing $IMAGES_DIR/$f"
   done
   for row in "${BUNDLES[@]}"; do
     [ -f "$IMAGES_DIR/${row%%|*}.raucb" ] || die "missing $IMAGES_DIR/${row%%|*}.raucb"
   done
-  # The box's native tools, written by --build. A workstation uses its own.
+  # The build host's native tools, written by --build. A workstation uses its own.
   if [ -f "$IMAGES_DIR/native.env" ]; then
     QEMU="$(sed -n 's/^QEMU=//p' "$IMAGES_DIR/native.env")"
     MCOPY="$(sed -n 's/^MCOPY=//p' "$IMAGES_DIR/native.env")"
@@ -876,7 +876,7 @@ run_suite() {
   print_results
 }
 
-# ── The build (on the box) ───────────────────────────────────────────────────
+# ── The build (on the build host) ──────────────────────────────────────────────
 
 bb_recipe_value() {
   bitbake-getvar --value -r "$1" "$2" 2> /dev/null || true

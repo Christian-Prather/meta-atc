@@ -22,7 +22,7 @@
 # skips still boots; it just never rolls back.
 #
 # It does NOT run the GRUB script. No offline tool can. The live proof is
-# scripts/qemu-rauc-proof.sh, and slice 2's fault suite reaches
+# scripts/qemu-rauc-proof.sh, and scripts/qemu-rauc-faults.sh reaches
 # every branch of the decision.
 #
 # Usage: check-atc-ab-layout.sh

@@ -8,7 +8,7 @@
 # never applies here.
 #
 # meta-atc defines no Orin machine. It builds on meta-tegra's machines as they
-# are (jetson-orin-nano-devkit-nvme for the farm board), whose tegra234.inc puts
+# are (for example jetson-orin-nano-devkit-nvme), whose tegra234.inc puts
 # `tegra234` into MACHINEOVERRIDES. One code path covers Nano, NX and AGX.
 
 # The factory artifact is NVIDIA's flash package, not a disk image. tegraflash

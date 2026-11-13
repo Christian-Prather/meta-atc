@@ -60,7 +60,7 @@ scaled() {
 
 # The NIC arguments, one per line, for DNS server $1. Empty $1, no NIC.
 #
-# Two passt settings carry the design. `--no-map-gw`: passt maps the gateway
+# Two passt settings matter here. `--no-map-gw`: passt maps the gateway
 # address to the host by default, and the lab DNS server IS the gateway.
 # `tcp-ports=22`: the container's port 22 reaches the guest's sshd. The
 # container needs net.ipv4.ip_unprivileged_port_start=0 for that bind.

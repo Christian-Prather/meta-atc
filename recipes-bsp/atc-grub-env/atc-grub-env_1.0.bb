@@ -4,7 +4,8 @@ EFI system partition. The config is the bootloader tier: it is the only code \
 that can count a boot that never reached userspace. RAUC writes the same \
 environment from userspace through grub-editenv."
 HOMEPAGE = "https://github.com/Agency-Tool-Company/meta-atc"
-LICENSE = "CLOSED"
+LICENSE = "MIT"
+LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
 SRC_URI = "file://atc-ab-grub.cfg"
 

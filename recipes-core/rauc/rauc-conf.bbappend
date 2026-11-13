@@ -1,6 +1,6 @@
 # The RAUC system configuration and the keyring for an atc A/B image.
 #
-# system.conf is the design's, verbatim: two ext4 slots by PARTLABEL, the GRUB
+# system.conf: two ext4 slots by PARTLABEL, the GRUB
 # backend on the one environment file, and verity bundles only. A plain bundle
 # over 2 GiB is the CVE-2026-34155 case, so `bundle-formats=verity` refuses
 # plain bundles outright.
@@ -39,7 +39,7 @@ python () {
         raise bb.parse.SkipRecipe(
             "RAUC_KEYRING_FILE must be an absolute path to the CA that signs "
             "this image's bundles, set in local.conf. It is '%s'. "
-            "cloud/yocto-builder/rauc-test-keys.sh writes a test CA to "
+            "scripts/rauc-test-keys.sh writes a test CA to "
             "/cache/atc-rauc-keys/ca.cert.pem." % (keyring or ''))
 }
 

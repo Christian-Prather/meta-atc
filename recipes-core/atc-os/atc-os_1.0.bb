@@ -4,7 +4,8 @@ DESCRIPTION = "The reboot that atcd requests through a file in the store, the \
 atc and drives RAUC over D-Bus; these units are the parts that need root and \
 that must work when atcd does not run."
 HOMEPAGE = "https://github.com/Agency-Tool-Company/meta-atc"
-LICENSE = "CLOSED"
+LICENSE = "MIT"
+LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
 SRC_URI = " \
     file://atc-os-reboot.path \

@@ -104,7 +104,9 @@ bitbake atc-image
 ```
 
 An A/B build needs the `rauc` distro feature, an OS version, and signing keys.
-The keys are not in this layer. Supply your own:
+The keys are not in this layer. For a test build,
+`scripts/rauc-test-keys.sh <dir>` makes a test CA and a signing pair in
+`<dir>`. A product signs with its own keys. Supply them:
 
 ```
 DISTRO_FEATURES:append = " rauc"
@@ -149,9 +151,17 @@ tests/run.sh
 ```
 
 This runs every check that needs no Yocto build. CI runs the same command.
-Some checks compare the layer with the atc source. Point `ATC_MONOREPO` at a
-checkout of it to run them too:
+
+Some checks compare the layer's copies of atc files with the atc source. They
+run only when `ATC_MONOREPO` names a checkout of that source, and the output
+says when they are skipped. The atc maintainers run them each time the atc
+source moves to a new layer commit:
 
 ```sh
 ATC_MONOREPO=/path/to/atc-source tests/run.sh
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE). The atcd binary that the layer downloads is
+under the atc license, MIT or Apache-2.0.

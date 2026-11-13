@@ -37,7 +37,7 @@ WKS_FILE:atc-slot-grub = "atc-ab.wks.in"
 # config, so an entry landing on EFI/BOOT/grub.cfg wins. That ordering is the
 # whole mechanism, and it is the one thing here that a build can change out from
 # under us. check-atc-ab-layout.sh asserts the entry exists; only a real build
-# proves it lands. Confirm it on the builder box with:
+# proves it lands. Confirm it after a build with:
 #
 #   wic ls <image>.wic:1 EFI/BOOT/grub.cfg
 #

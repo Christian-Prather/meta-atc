@@ -5,7 +5,10 @@ the unit interpolates the store root, socket path, service user and telemetry \
 endpoint of the specific device, so a copy baked into an image drifts from \
 render_systemd_unit. First-boot `atc bootstrap atcd install` renders it."
 HOMEPAGE = "https://github.com/Agency-Tool-Company/meta-atc"
-LICENSE = "CLOSED"
+# The layer's files are MIT. atcd, the guard and install-atcd.sh come from the
+# atc source, which is MIT OR Apache-2.0.
+LICENSE = "MIT | Apache-2.0"
+LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
 # The binary is the static musl atcd from the atc release build. bitbake
 # installs that artifact and does not rebuild atcd, so the image carries the

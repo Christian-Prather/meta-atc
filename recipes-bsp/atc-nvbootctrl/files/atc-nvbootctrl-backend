@@ -223,7 +223,7 @@ efi_write() {
 # the launcher when one is absent. So this case does not change a booted
 # device. If it does occur, a refusal here would stop `rauc status` and the
 # first install. A variable that is present with the wrong size is still
-# refused. S4 records the real state of a fresh orin-nano.
+# refused. The hardware proof records the real state of a freshly flashed board.
 status_read() {
   file="$EFIVARS/RootfsStatusSlot$1-$NV_GUID"
   if [ ! -e "$file" ]; then
@@ -428,7 +428,7 @@ set_state_good() {
   status_write "$1" normal
 }
 
-# The steps run in the design's order, one block each, and each step that
+# The steps run in a fixed order, one block each, and each step that
 # fails stops the verb. Append a later step at the end. The order is 1 or 2,
 # then 4, then 3, 3b and 5.
 #

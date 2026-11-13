@@ -5,7 +5,7 @@
 # archive it emits: atc-image builds, and the archive's flash layout names the
 # rootfs partition APP.
 #
-# Run this ON THE BUILDER BOX, as the build user.
+# Run this on the build host, as the build user.
 #
 # The script writes conf/local.conf on every run, so an edit there is lost.
 # Put your own settings, for example ATC_DEPLOY_SSH_KEY, in conf/auto.conf of
@@ -23,14 +23,14 @@
 #   ./tegra-build.sh --self-test
 #
 #   --machine <m>       a meta-tegra tegra234 machine. Default
-#                       jetson-orin-nano-devkit-nvme, the farm board.
+#                       jetson-orin-nano-devkit-nvme.
 #   --build-dir <path>  bitbake build directory. Default <cache>/build-tegra.
 #                       The script writes its conf/ on every run.
 #   <recipe>            the images to build. Default atc-image. Each one must
 #                       emit <recipe>-<machine>.rootfs.tegraflash.tar.gz.
 #   --self-test         check this script's logic. Needs no box.
 #
-# Required on the box: poky (POKY_DIR, default <cache>/poky), the cache config
+# Required on the build host: poky (POKY_DIR, default <cache>/poky), the cache config
 # from cache-setup.sh, and network access to atc.dev: the atcd recipe downloads
 # a verified atcd with install-atcd.sh. To build in a local atcd instead, set
 # ATCD_BINARY to a static aarch64 binary.
@@ -122,7 +122,7 @@ require_atcd() {
     return 0
   fi
   [ -f "$ATCD_BINARY" ] || die "no atcd at ATCD_BINARY=$ATCD_BINARY. Copy a
-  static aarch64 atcd to the box, or set ATCD_BINARY."
+  static aarch64 atcd to the build host, or set ATCD_BINARY."
   echo "atcd: $(sha256sum "$ATCD_BINARY")"
   if command -v file > /dev/null; then
     echo "atcd: $(file -b "$ATCD_BINARY")"
@@ -311,7 +311,7 @@ write_build_conf "$BUILD_DIR" "$layers"
 
 # oe-init-build-env reads unset variables and changes the directory.
 set +u
-# shellcheck disable=SC1091  # poky's, on the box
+# shellcheck disable=SC1091  # poky's, on the build host
 source "$POKY_DIR/oe-init-build-env" "$BUILD_DIR" > /dev/null
 set -u
 

@@ -131,7 +131,7 @@ ROOTFS_POSTPROCESS_COMMAND += "atc_install_fstab_entries"
 
 # The empty ext4 the factory flash writes to UDA (recipes-bsp/atc-tegra-uda).
 # DATAFILE is its name inside the tegraflash archive, and it does not end in
-# .ext4: the archive's one .ext4 member is the rootfs, which the farm flash host
+# .ext4: the archive's one .ext4 member is the rootfs, which flash tooling
 # reads. A task flag takes no override; on a backend that builds no tegraflash
 # image, do_image_tegraflash does not run.
 DATAFILE:atc-slot-nvbootctrl = "atc-uda.img"

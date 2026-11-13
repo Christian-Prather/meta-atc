@@ -5,7 +5,8 @@ trial predicate that atc-os reads. \
 tests/atc-nvbootctrl-backend_test.sh runs the backend against a \
 fake nvbootctrl and a fake efivarfs directory."
 HOMEPAGE = "https://github.com/Agency-Tool-Company/meta-atc"
-LICENSE = "CLOSED"
+LICENSE = "MIT"
+LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
 SRC_URI = " \
     file://atc-nvbootctrl-backend \
