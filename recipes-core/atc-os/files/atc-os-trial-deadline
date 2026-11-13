@@ -1,0 +1,40 @@
+#!/bin/sh
+# atc-os-trial-deadline: reboot a trial slot that nothing marked good.
+#
+# atc-os-trial-deadline.timer runs this 15 minutes after boot. When the slot
+# backend reports the BOOTED slot on trial and not marked good, the reboot hands
+# it back to the bootloader, which reverts it. A trial that atcd marked bad and
+# did not reboot yet is also on trial here, so the deadline reboots it too.
+#
+# atc-slot-trial is the one call into the slot backend. It prints the slot on
+# trial and not marked good, or `none`. A trial of the other slot, `none`, and
+# an unreadable state reboot nothing: a reboot there reverts nothing, and a
+# reboot every 15 minutes would only add an outage. A failed `rauc status`
+# reboots nothing for the same reason.
+set -eu
+
+SLOT_TRIAL="${ATC_SLOT_TRIAL:-/usr/libexec/atc-os/atc-slot-trial}"
+
+status="$(rauc status --output-format=shell)"
+eval "$status"
+
+slot="${RAUC_SYSTEM_BOOTED_BOOTNAME:-}"
+if [ -z "$slot" ]; then
+  echo "atc-os-trial-deadline: rauc names no booted slot" >&2
+  exit 1
+fi
+
+if ! trial="$("$SLOT_TRIAL")"; then
+  echo "atc-os-trial-deadline: $SLOT_TRIAL cannot read the trial state; not rebooting" >&2
+  exit 1
+fi
+if [ "$trial" != "$slot" ]; then
+  echo "atc-os-trial-deadline: slot $slot is not on trial (atc-slot-trial: $trial)"
+  exit 0
+fi
+
+echo "atc-os-trial-deadline: trial slot $slot is not good at the deadline, rebooting"
+# shellcheck disable=SC2093  # the reboot is the last thing this script does
+# --no-block: this oneshot is still starting, and the reboot must stop it.
+# A blocking call waits on a job that waits on this unit.
+exec systemctl --no-block reboot

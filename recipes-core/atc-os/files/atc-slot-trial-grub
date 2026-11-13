@@ -1,0 +1,41 @@
+#!/bin/sh
+# atc-slot-trial, the GRUB backend's copy. atc-os installs it at
+# /usr/libexec/atc-os/atc-slot-trial on `atc-slot-grub` only. The nvbootctrl
+# backend's package installs its own copy at the same path.
+#
+# Print the slot that is on trial and not marked good, or `none`. Exit non-zero
+# when the boot state cannot be read. atc-os-pre-install and
+# atc-os-trial-deadline make no other call into the slot backend.
+#
+# The GRUB rule: ATC_TRIAL names X, and not (X_OK=1 and X_TRY=0). A trial that
+# atcd marked good reads OK=1 TRY=0, and grub.cfg records it as confirmed at the
+# next boot, so it is not in flight.
+set -eu
+
+GRUBENV="${ATC_GRUBENV:-/boot/atc/grubenv}"
+
+fail() {
+  echo "atc-slot-trial: $*" >&2
+  exit 1
+}
+
+# The value of $1 in the boot environment text $2.
+env_value() {
+  printf '%s\n' "$2" | sed -n "s/^$1=//p"
+}
+
+env="$(grub-editenv "$GRUBENV" list)" || fail "cannot read $GRUBENV"
+trial="$(env_value ATC_TRIAL "$env")"
+case "$trial" in
+  none)
+    echo none
+    exit 0
+    ;;
+  A | B) ;;
+  *) fail "ATC_TRIAL='$trial' in $GRUBENV is not a slot" ;;
+esac
+if [ "$(env_value "${trial}_OK" "$env")" = 1 ] && [ "$(env_value "${trial}_TRY" "$env")" = 0 ]; then
+  echo none
+else
+  echo "$trial"
+fi

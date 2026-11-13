@@ -1,0 +1,15 @@
+[Unit]
+Description=Reboot an unconfirmed trial slot at the trial deadline
+
+[Timer]
+# 15 minutes. atcd's own dwell deadline is 10 minutes, so atcd decides first
+# whenever it runs. This bounds a trial in which atcd never starts.
+OnBootSec=15min
+# Again every 5 minutes. A run that cannot read RAUC or the boot environment
+# exits without a reboot, and a single run would leave that trial with no
+# deadline. A run on a good slot, or on a slot not on trial, changes nothing.
+OnUnitInactiveSec=5min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

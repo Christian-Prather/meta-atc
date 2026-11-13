@@ -1,0 +1,11 @@
+[Unit]
+Description=Reboot for an OS update that atcd requested
+
+[Service]
+Type=oneshot
+# Remove the request BEFORE the reboot, so the next boot does not find it and
+# reboot again.
+ExecStart=/bin/rm -f /var/atc/os/reboot-request
+# --no-block: the reboot stops this oneshot, so a blocking call would wait on
+# itself.
+ExecStart=/bin/systemctl --no-block reboot

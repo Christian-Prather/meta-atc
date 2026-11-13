@@ -1,0 +1,8 @@
+#!/bin/sh
+# atc-slot-trial on the nvbootctrl slot backend, installed at
+# /usr/libexec/atc-os/atc-slot-trial. It prints the slot on trial that is not
+# marked good, or none. atc-os-pre-install and atc-os-trial-deadline call it.
+# AtcSlotState holds the answer, and the backend is the one reader of it.
+#
+# ATC_NVBOOTCTRL_BACKEND is for the tests.
+exec "${ATC_NVBOOTCTRL_BACKEND:-/usr/lib/rauc/atc-nvbootctrl-backend}" trial-slot

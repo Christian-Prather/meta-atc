@@ -1,0 +1,38 @@
+#!/bin/sh
+# atc-os-pre-install: RAUC's system pre-install handler, named in system.conf.
+#
+# Refuse an install while a trial is in flight and not marked good. RAUC always
+# writes the slot that is not booted. During a trial of B that slot is A, the
+# last confirmed slot, so the install would overwrite the only revert target,
+# and the bootloader would then boot the new A as steady. A trial that is
+# marked good is not in flight: the next boot records it as confirmed, and an
+# install into the other slot is a new trial.
+#
+# The slot backend answers the question. atc-slot-trial prints the slot on
+# trial and not marked good, or `none`, and exits non-zero when it cannot read
+# the boot state. Each backend's package installs its own copy.
+#
+# A device-side handler, not a bundle hook. RAUC runs it for every bundle,
+# before it marks the target slot bad. A bundle install-check would replace
+# RAUC's own `compatible` check, and a bundle built without it would skip the
+# guard.
+set -eu
+
+SLOT_TRIAL="${ATC_SLOT_TRIAL:-/usr/libexec/atc-os/atc-slot-trial}"
+
+# RAUC prints a handler's plain output to its own log only. A line that starts
+# with "<< error " also becomes an install status message ("Error: ..."). The
+# CLI does not print that message, and LastError keeps only "Pre-install
+# handler error". Measured on the builder on 2026-11-09.
+refuse() {
+  echo "<< error atc-os-pre-install: $*; refusing the install"
+  echo "atc-os-pre-install: $*; refusing the install" >&2
+  exit 1
+}
+
+trial="$("$SLOT_TRIAL")" || refuse "cannot read the trial state ($SLOT_TRIAL failed)"
+case "$trial" in
+  none) exit 0 ;;
+  A | B) refuse "slot $trial is on trial and not marked good. Mark it good, or let it revert, then install again" ;;
+  *) refuse "$SLOT_TRIAL printed '$trial', which is not a slot" ;;
+esac

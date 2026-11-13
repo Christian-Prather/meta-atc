@@ -1,0 +1,46 @@
+# The boot-time half of the nvbootctrl slot backend. It records a confirmed
+# trial, clears a spent one, and runs `nvbootctrl verify` on a steady boot.
+# It never verifies a trial in flight: only atcd confirms a trial.
+#
+# It replaces nv_update_verifier.service, which verifies every boot. Early is
+# the point: until this unit runs, a warm reset counts against the slot.
+# The table is in the backend's `boot` verb.
+[Unit]
+Description=Record the A/B slot state of this boot (atc, Tegra)
+DefaultDependencies=no
+RequiresMountsFor=/sys/firmware/efi/efivars
+# nvbootctrl reads /etc/nv_boot_control.conf, which setup-nv-boot-control
+# writes at boot. Wants=, not Requires=: if that unit fails, this unit still
+# starts, fails visibly in the journal, and keeps restarting. With Requires=
+# it would never start, so nothing would retry the verify.
+Wants=setup-nv-boot-control.service
+After=setup-nv-boot-control.service
+Before=sysinit.target shutdown.target
+Conflicts=shutdown.target
+# A failed verify leaves the booted slot's count at 0. With no bootable
+# partner, the next warm reset boots the recovery kernel. So the verify must
+# never stop retrying while this slot is the last bootable one. One start
+# retries once a second until it succeeds or TimeoutStartSec stops it, and
+# Restart= starts it again. StartLimitIntervalSec=0 removes the start limit,
+# so the restarts have no end.
+#
+# With a bootable partner the start gives up after three tries, with exit
+# status 3. RestartPreventExitStatus=3 stops the restarts, and the unit shows
+# in `systemctl --failed`. The next warm reset falls back to the partner.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Three verify tries take seconds. A hung nvbootctrl must not hold the boot.
+TimeoutStartSec=60
+Restart=on-failure
+RestartSec=2
+# These backend exit statuses end the unit for this boot. 3: the verify gave
+# up with a bootable partner. 4: a revert row requested its reboot, and a
+# restart would request the same reboot again.
+RestartPreventExitStatus=3 4
+ExecStart=/usr/lib/rauc/atc-nvbootctrl-backend boot
+
+[Install]
+WantedBy=sysinit.target

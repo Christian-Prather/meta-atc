@@ -1,0 +1,248 @@
+#!/bin/sh
+# atc-tegra-capsule: stage, arm and disarm the Jetson UEFI bootloader capsule.
+#
+# On a Jetson with the redundant layout, the bootloader slot and the rootfs
+# slot are one pair. Boot chain A boots APP, and boot chain B boots APP_b. A
+# capsule update writes the boot chain that did NOT boot, then makes it
+# active. The rootfs follows. So the capsule is the slot switch, and the new
+# firmware and the new rootfs go live at the same reboot.
+#
+# A staged capsule is bound to the slot whose rootfs came from the same
+# bundle. Only an arm for that slot applies it. A capsule staged for B never
+# switches to A, whatever later calls set-primary A.
+#
+# Callers:
+# - stage, disarm: the bundle hook, at slot-post-install, after RAUC wrote
+#   the inactive APP slot. The capsule comes from the bundle, so the firmware
+#   and the rootfs come from one signed bundle. The hook NEVER arms.
+# - arm, disarm, is-staged, armed-slot: the RAUC nvbootctrl backend. Arming
+#   is the last step of set-primary, after the trial write. It is the commit
+#   point of an install, so an install that fails before it leaves a staged
+#   file that no reboot applies.
+# - clear-bit: the backend's boot verb, at every boot. A capsule that UEFI
+#   processed, or that it did not, is never applied by a later reboot.
+#
+# Commands:
+#   stage <file> <slot>  Clear the bit, remove every staged file, then copy
+#                        <file> to the ESP as EFI/UpdateCapsule/TEGRA_BL.Cap,
+#                        bound to <slot> (A or B). Without the bit, UEFI
+#                        ignores the file.
+#   arm <slot>           Set bit 2 (FILE_CAPSULE_DELIVERY_SUPPORTED) of
+#                        OsIndications. Refuse unless a capsule is staged for
+#                        <slot>.
+#   disarm               Clear the bit and remove every staged file.
+#   clear-bit            Clear the bit. Keep the staged file.
+#   is-staged <slot>     Exit 0 when a capsule is staged for <slot>, 1 when
+#                        none is. Exit 2 when it cannot tell: the ESP is not
+#                        mounted, so the staged file is out of sight.
+#   armed-slot           Print the slot of the armed capsule: a staged file
+#                        with a binding AND the bit. Exit 1 when none is
+#                        armed. One fact alone applies nothing. Exit 2 when
+#                        it cannot tell: the bit is set and the ESP is not
+#                        mounted, so the staged file is out of sight.
+#
+# Every command converges: a second run after a run that stopped at any point
+# reaches the same end state.
+#
+# The paths are overridable only so the tests can use a fake ESP, a fake
+# efivarfs and a fake mount table. On a device the defaults apply.
+set -eu
+
+ESP="${ATC_TEGRA_ESP:-/boot/efi}"
+EFIVARS="${ATC_EFIVARS_DIR:-/sys/firmware/efi/efivars}"
+MOUNTINFO="${ATC_MOUNTINFO:-/proc/self/mountinfo}"
+# The scratch file of a variable write goes here, not to /tmp. /run is a tmpfs
+# that exists before sysinit.target, when the boot unit runs clear-bit; /tmp
+# may not be mounted yet.
+RUNDIR="${ATC_TEGRA_CAPSULE_RUNDIR:-/run}"
+
+# The UEFI global variable GUID. OsIndications lives under it.
+GLOBAL_GUID=8be4df61-93ca-11d2-aa0d-00e098032b8c
+OSIND="$EFIVARS/OsIndications-$GLOBAL_GUID"
+CAPDIR="$ESP/EFI/UpdateCapsule"
+# The name NVIDIA's documentation and OE4T's updaters use. UEFI tries EVERY
+# file in the directory, so the directory holds this one complete file or
+# nothing. The partial copy and the binding go beside the directory, on the
+# same filesystem, so each rename is atomic.
+CAPSULE="$CAPDIR/TEGRA_BL.Cap"
+PART="$ESP/EFI/.atc-capsule.part"
+SLOT_FILE="$ESP/EFI/.atc-capsule.slot"
+
+fail() {
+  echo "atc-tegra-capsule: $*" >&2
+  exit 1
+}
+
+want_slot() {
+  case "${1:-}" in
+    A | B) ;;
+    *) fail "unknown slot '${1:-}'; the slots are A and B" ;;
+  esac
+}
+
+# The ESP must be a mount point. systemd mounts PARTLABEL=esp at /boot/efi.
+# If the mount is missing, a copy lands on the rootfs, and the switch does not
+# happen.
+#
+# Not yet proven on hardware: UEFI reads the capsule from the esp partition
+# whichever boot chain is current. The layout's esp_alt stays empty, and no
+# NVIDIA or meta-tegra source settles it. An install from slot B to slot A on
+# a board proves or refutes it.
+esp_mounted() {
+  awk -v p="$ESP" '$5 == p { found = 1 } END { exit !found }' "$MOUNTINFO"
+}
+
+# The low byte of OsIndications, in decimal. 0 when the variable is absent.
+# An efivarfs file is 4 bytes of attributes, then the 8-byte value.
+osind_low() {
+  if [ -e "$OSIND" ]; then
+    # No pipe: od's own status must reach the caller, so an unreadable
+    # variable fails here and does not read as 0.
+    v="$(od -An -tu1 -j4 -N1 "$OSIND")" || fail "cannot read $OSIND"
+    v="$(printf '%s' "$v" | tr -d ' \n')"
+    case "$v" in
+      '' | *[!0-9]*) fail "cannot read $OSIND" ;;
+    esac
+    echo "$v"
+  else
+    echo 0
+  fi
+}
+
+# Write the low byte $1 of OsIndications. Keep the 7 higher bytes. efivarfs
+# takes the attributes and the value in ONE write, so dd writes all 12 bytes
+# as one block. 0x07 is NON_VOLATILE | BOOTSERVICE_ACCESS | RUNTIME_ACCESS.
+# efivarfs marks most variable files immutable, so the write clears that flag
+# first and sets it again after, as nvbootctrl and the backend's efi_write do.
+#
+# Once dd returns, the write is committed: the new value is in the variable
+# store, and the caller reads it back. A failed `chattr +i` after that is only
+# a warning. A failure there would report an arm that did not happen while the
+# bit is set, so the capsule would still apply at the next reboot.
+osind_write_low() {
+  high='\000\000\000\000\000\000\000'
+  if [ -e "$OSIND" ]; then
+    high="$(od -An -to1 -j5 -N7 "$OSIND" | tr -s ' ' '\n' | sed -n 's/^\([0-7]\{3\}\)$/\\\1/p' | tr -d '\n')"
+  fi
+  buf="$(mktemp "$RUNDIR/atc-tegra-capsule.XXXXXX")" || fail "cannot make a temporary file in $RUNDIR"
+  # shellcheck disable=SC2059 # the format is the octal escapes built above
+  printf "\\007\\000\\000\\000\\$(printf '%03o' "$1")$high" > "$buf"
+  if [ -e "$OSIND" ]; then
+    chattr -i "$OSIND" || {
+      rm -f "$buf"
+      fail "cannot clear the immutable flag of $OSIND"
+    }
+  fi
+  if ! dd if="$buf" of="$OSIND" bs=12 count=1 2> /dev/null; then
+    rm -f "$buf"
+    fail "cannot write $OSIND"
+  fi
+  rm -f "$buf"
+  chattr +i "$OSIND" ||
+    echo "atc-tegra-capsule: warning: wrote $OSIND, but cannot set its immutable flag again" >&2
+}
+
+# Clear bit 2. The variable store is not on the ESP, so this works when the
+# ESP is not mounted. A bit with no file applies nothing, and a file with no
+# bit applies nothing, so a crash between this and remove_files is safe.
+clear_bit() {
+  low="$(osind_low)"
+  if [ $((low & 4)) -ne 0 ]; then
+    osind_write_low $((low & ~4))
+    [ $(($(osind_low) & 4)) -eq 0 ] || fail "OsIndications bit 2 is still set"
+    echo "atc-tegra-capsule: cleared OsIndications bit 2"
+  fi
+}
+
+# Flush the ESP. A filesystem-scoped sync: a global one waits for every disk
+# of the host, which can take minutes on a busy one.
+sync_esp() {
+  sync -f "$ESP" || fail "cannot sync $ESP"
+}
+
+# Remove everything in the capsule directory, so a stray capsule from another
+# tool cannot apply either, then the partial copy and the binding.
+remove_files() {
+  if [ -d "$CAPDIR" ]; then
+    find "$CAPDIR" -mindepth 1 -delete || fail "cannot empty $CAPDIR"
+  fi
+  rm -f "$PART" "$SLOT_FILE"
+  sync_esp
+}
+
+# The slot the staged capsule is bound to, or nothing.
+staged_slot() {
+  [ -f "$CAPSULE" ] && [ -s "$CAPSULE" ] && [ -f "$SLOT_FILE" ] || return 0
+  slot="$(cat "$SLOT_FILE")"
+  case "$slot" in A | B) echo "$slot" ;; esac
+}
+
+case "${1:-}" in
+  stage)
+    src="${2:?usage: atc-tegra-capsule stage <capsule-file> <slot>}"
+    want_slot "${3:-}"
+    # The bit goes first, before any check can fail. An install that stops
+    # here then leaves nothing that the next reboot applies.
+    clear_bit
+    [ -f "$src" ] && [ -s "$src" ] || fail "no capsule at $src"
+    esp_mounted || fail "the ESP is not mounted at $ESP; a capsule there would switch nothing"
+    # This frees the ESP space for the copy, too.
+    remove_files
+    mkdir -p "$CAPDIR"
+    cp "$src" "$PART"
+    sync_esp
+    cmp -s "$src" "$PART" || {
+      rm -f "$PART"
+      fail "the copy on the ESP differs from $src"
+    }
+    # The binding goes before the capsule: a crash between the two leaves a
+    # binding with no capsule, which is not staged.
+    printf '%s' "$3" > "$SLOT_FILE.part"
+    mv -f "$SLOT_FILE.part" "$SLOT_FILE"
+    mv -f "$PART" "$CAPSULE"
+    sync_esp
+    echo "atc-tegra-capsule: staged $CAPSULE for slot $3 (not armed)"
+    ;;
+  arm)
+    want_slot "${2:-}"
+    [ "$(staged_slot)" = "$2" ] || fail "no capsule staged for slot $2"
+    esp_mounted || fail "the ESP is not mounted at $ESP"
+    low="$(osind_low)"
+    osind_write_low $((low | 4))
+    [ $(($(osind_low) & 4)) -ne 0 ] || fail "OsIndications bit 2 did not stick"
+    echo "atc-tegra-capsule: armed; the next reboot applies the capsule and boots slot $2"
+    ;;
+  disarm)
+    # Without the ESP mount, remove_files reaches only the empty mount point,
+    # and the staged file stays. The bit is clear, so the file applies
+    # nothing, and the next stage or disarm with the mount removes it.
+    clear_bit
+    remove_files
+    ;;
+  clear-bit)
+    clear_bit
+    ;;
+  is-staged)
+    want_slot "${2:-}"
+    if ! esp_mounted; then
+      echo "atc-tegra-capsule: the ESP is not mounted at $ESP; cannot tell whether a capsule is staged" >&2
+      exit 2
+    fi
+    [ "$(staged_slot)" = "$2" ]
+    ;;
+  armed-slot)
+    # The bit first: with the bit clear nothing applies, ESP or not.
+    [ $(($(osind_low) & 4)) -ne 0 ] || exit 1
+    if ! esp_mounted; then
+      echo "atc-tegra-capsule: OsIndications bit 2 is set and the ESP is not mounted at $ESP; cannot tell whether a capsule is armed" >&2
+      exit 2
+    fi
+    slot="$(staged_slot)"
+    [ -n "$slot" ] || exit 1
+    echo "$slot"
+    ;;
+  *)
+    echo "usage: atc-tegra-capsule stage <file> <slot> | arm <slot> | disarm | clear-bit | is-staged <slot> | armed-slot" >&2
+    exit 2
+    ;;
+esac

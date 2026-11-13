@@ -1,0 +1,807 @@
+#!/bin/sh
+# atc-nvbootctrl-backend: RAUC's custom bootloader backend on Jetson (Tegra).
+#
+# system-nvbootctrl.conf selects `bootloader=custom` and names this file as
+# `bootloader-custom-backend`. RAUC 1.15 calls it with one of these verbs:
+#
+#   get-current                     the bootname of the booted slot
+#   get-primary                     the bootname of the slot the next boot loads
+#   set-primary <bootname>          make that slot the next boot, on trial
+#   get-state <bootname>            good or bad
+#   set-state <bootname> <good|bad>
+#
+# Two more verbs are ATC's, not RAUC's:
+#
+#   trial-slot   the slot on trial that is not marked good, or none.
+#                /usr/libexec/atc-os/atc-slot-trial calls it.
+#   boot         the boot-time decision. atc-tegra-slot-boot.service runs it.
+#
+#
+# A verb that fails exits non-zero with its reason on the last stderr line,
+# and prints nothing on stdout. RAUC then reports the error and does not guess.
+#
+# Three stores hold the slot state. nvbootctrl reads and sets the boot chain
+# and the retry counts. The UEFI variables RootfsStatusSlotA and
+# RootfsStatusSlotB mark a slot normal or unbootable. The UEFI variable
+# AtcSlotState holds ATC's steady slot, trial slot and pending confirm.
+set -eu
+
+EFIVARS="${ATC_EFIVARS_DIR:-/sys/firmware/efi/efivars}"
+LOCK="${ATC_NVBOOTCTRL_LOCK:-/run/atc-nvbootctrl.lock}"
+# The boot unit writes this file when the boot decision of this boot is
+# complete. /run is a tmpfs, so each boot starts without it.
+BOOT_DONE="${ATC_NVBOOTCTRL_BOOT_DONE:-/run/atc-tegra-slot-boot.done}"
+NV_GUID=781e084c-a330-417c-b678-38e696380cb9
+STATE_VAR="$EFIVARS/AtcSlotState-02a2442b-c5ad-47ce-a9c6-41083c3b727d"
+# The tool that stages, arms and disarms the bundle's UEFI capsule. A device
+# without it has no capsule: the bundle hook fails an install that carries one.
+CAPSULE_TOOL="${ATC_TEGRA_CAPSULE:-/usr/libexec/atc-os/atc-tegra-capsule}"
+# The efivarfs attribute word, little endian: non-volatile, boot service and
+# runtime access. Each variable file starts with it.
+ATTRS='\007\000\000\000'
+VERIFY_TRIES=3
+# The boot unit's exit status when the verify gives up with a bootable
+# partner. RestartPreventExitStatus= in the unit names it, so that case stops
+# and shows in `systemctl --failed`: the next warm reset falls back.
+EXIT_GAVE_UP=3
+# The boot unit's exit status after a revert row requested its reboot. The
+# unit names it in RestartPreventExitStatus= too: a restart would match the
+# same row and request the reboot again, and sysinit.target would wait on it.
+EXIT_REVERTING=4
+# The command that requests a reboot. ATC_NVBOOTCTRL_REBOOT is for the tests.
+REBOOT="${ATC_NVBOOTCTRL_REBOOT:-systemctl --no-block reboot}"
+
+fail() {
+  echo "atc-nvbootctrl-backend: $*" >&2
+  exit 1
+}
+
+# ── The slot table ─────────────────────────────────────────────────────────
+# RAUC names a slot by the bootname in system.conf. nvbootctrl names it by a
+# number. These two functions are the only places that hold the pairing.
+
+slot_number() {
+  case "$1" in
+    A) echo 0 ;;
+    B) echo 1 ;;
+    *) fail "unknown slot bootname '$1'; the bootnames are A and B" ;;
+  esac
+}
+
+# The partner of a bootname that slot_number accepted.
+other() { if [ "$1" = A ]; then echo B; else echo A; fi; }
+
+# ── nvbootctrl: the only functions that run it or read its output ──────────
+
+nv_current() {
+  out="$(nvbootctrl -t rootfs get-current-slot)" ||
+    fail "nvbootctrl -t rootfs get-current-slot failed"
+  case "$out" in
+    0) echo A ;;
+    1) echo B ;;
+    *) fail "nvbootctrl -t rootfs get-current-slot printed '$out', not 0 or 1" ;;
+  esac
+}
+
+# The `Active bootloader slot:` line. The rootfs follows the bootloader chain,
+# because the redundant layout pairs them.
+nv_active() {
+  out="$(nvbootctrl dump-slots-info)" || fail "nvbootctrl dump-slots-info failed"
+  act="$(printf '%s\n' "$out" | sed -n 's/^Active bootloader slot:[[:space:]]*\([^[:space:]]*\)[[:space:]]*$/\1/p')"
+  case "$act" in
+    A | B) echo "$act" ;;
+    *) fail "cannot parse nvbootctrl dump-slots-info: no single 'Active bootloader slot: A' or 'B' line" ;;
+  esac
+}
+
+# What `nvbootctrl verify` does to the scratch register SR_RF. The L4T
+# launcher (edk2-nvidia L4TRootfsValidation.c) reads RootfsStatusSlot<X> only
+# when SR_RF has no 0xFACE magic (InitializeRootfsStatusReg). While the magic
+# is set, a slot boots only on a non-zero SR_RF count (IsRootfsSlotBootable),
+# also when the launcher fails over to it.
+#
+# The verify of the R36.5.2 nvbootctrl writes 0 to three SR_RF fields. The
+# binary is from nvidia-l4t-tools 36.5.2-20260716114719, the meta-tegra pin's
+# package. At .text 0x1c00 it stores 0 in the value. Then a loop at
+# 0x1c18-0x1c3c runs three times. Each pass calls the register write function
+# ([hal+0x100], write=1) for one entry of the array at .data 0x20368.
+#
+# That array holds rootfs_sr_magic, rootfs_retry_count_a and
+# rootfs_retry_count_b. rootfs_current is not in it. So after verify, the
+# next boot, warm or cold, sets both counts again from the status variables.
+# This backend uses that to refill or empty a count.
+
+# The SR_RF retry count of bootname $1, from the slot lines of
+# `nvbootctrl -t rootfs dump-slots-info`. The count means something only while
+# SR_RF has its magic, which the launcher sets at each boot. So the boot unit,
+# which runs before its own verify, can read it.
+nv_count() {
+  n="$(slot_number "$1")"
+  out="$(nvbootctrl -t rootfs dump-slots-info)" ||
+    fail "nvbootctrl -t rootfs dump-slots-info failed"
+  count="$(printf '%s\n' "$out" | sed -n "s/^slot:[[:space:]]*$n,[[:space:]]*retry_count:[[:space:]]*\([0-9][0-9]*\),.*/\1/p")"
+  case "$count" in
+    "" | *[!0-9]*) fail "cannot parse nvbootctrl -t rootfs dump-slots-info: no single retry_count for slot $n" ;;
+  esac
+  echo "$count"
+}
+
+# set-active-boot-slot without `-t rootfs`: it moves the bootloader chain, and
+# the paired rootfs follows it.
+nv_set_active() {
+  n="$(slot_number "$1")"
+  nvbootctrl set-active-boot-slot "$n" ||
+    fail "nvbootctrl set-active-boot-slot $n failed"
+}
+
+# ── The UEFI capsule ──────────────────────────────────────────────────────
+#
+# With the redundant layout, the capsule is the slot switch. At the reboot,
+# UEFI writes the capsule into the boot chain that did not boot, then boots
+# that chain, and the rootfs follows. The bundle hook stages the capsule and
+# never arms it. set-primary arms it as its last step.
+
+# Exit 0 when the bundle hook staged a capsule for slot $1. 1 when none is
+# staged for it, or the tool is missing.
+capsule_staged() {
+  [ -x "$CAPSULE_TOOL" ] || return 1
+  if "$CAPSULE_TOOL" is-staged "$1"; then return 0; else rc=$?; fi
+  # 1 is "none staged". Anything else, an unmounted ESP for one, means the
+  # tool cannot tell. A switch with set-active-boot-slot would then boot a
+  # bundle's rootfs on the old firmware, so refuse.
+  [ "$rc" = 1 ] || fail "cannot tell whether a UEFI capsule is staged for slot $1 (atc-tegra-capsule exit $rc); refusing to switch without it"
+  return 1
+}
+
+# The slot of the armed capsule (the bound file AND OsIndications bit 2), or
+# nothing. When the tool cannot tell (the bit is set and the ESP is not
+# mounted), refuse: the active chain may not be the next boot.
+capsule_armed_slot() {
+  [ -x "$CAPSULE_TOOL" ] || return 0
+  if "$CAPSULE_TOOL" armed-slot; then return 0; else rc=$?; fi
+  [ "$rc" = 1 ] || fail "cannot tell whether a UEFI capsule is armed (atc-tegra-capsule exit $rc); the next boot may not load the active chain"
+}
+
+capsule_disarm() {
+  [ -x "$CAPSULE_TOOL" ] || return 0
+  "$CAPSULE_TOOL" disarm >&2 || fail "cannot disarm the UEFI capsule"
+}
+
+capsule_arm() {
+  "$CAPSULE_TOOL" arm "$1" >&2 || fail "cannot arm the UEFI capsule; the boot chain stays on $(nv_current)"
+}
+
+# ── UEFI variables through efivarfs ───────────────────────────────────────
+
+# $1 the file, then a printf format and its arguments for the data. The file
+# gets the attribute word and the data in one write. efivarfs takes a variable
+# in a single write call. dd with a block larger than any value makes one.
+# efivarfs marks most variable files immutable, so the write clears that flag
+# first and sets it again after, as nvbootctrl does.
+efi_write() {
+  file="$1"
+  fmt="$2"
+  shift 2
+  # In the lock's directory, /run by default: a tmpfs that exists before
+  # sysinit.target, when the boot unit runs.
+  tmp="$(mktemp "${LOCK%/*}/atc-nvbootctrl.XXXXXX")" || fail "cannot make a temporary file in ${LOCK%/*}"
+  # shellcheck disable=SC2059  # the format is ATTRS and a constant of this file
+  printf "$ATTRS$fmt" "$@" > "$tmp"
+  if [ -e "$file" ]; then
+    chattr -i "$file" || {
+      rm -f "$tmp"
+      fail "cannot clear the immutable flag of $file"
+    }
+  fi
+  dd if="$tmp" of="$file" bs=1024 2> /dev/null || {
+    rm -f "$tmp"
+    fail "cannot write $file"
+  }
+  # Once dd returns, the write is committed: the new value is in the variable
+  # store. A failed `chattr +i` after that is only a warning. A failure there
+  # would report a verb that did not happen while its change is in place. So
+  # read the variable back, and refuse only if it differs from the write.
+  if ! chattr +i "$file"; then
+    echo "atc-nvbootctrl-backend: warning: wrote $file, but cannot set its immutable flag again" >&2
+    cmp -s "$tmp" "$file" || {
+      rm -f "$tmp"
+      fail "wrote $file, but it reads back a different value"
+    }
+  fi
+  rm -f "$tmp"
+}
+
+# RootfsStatusSlot<X>: prints normal or unbootable. The data is a 4-byte
+# little-endian value. Only 0xFF is unbootable, as the launcher reads it
+# (NVIDIA_OS_STATUS_UNBOOTABLE in InitializeRootfsStatusReg and
+# IsValidRootfs). Any other value gets a full retry count from the launcher,
+# so it reads normal here too.
+#
+# An absent RootfsStatusSlot<X> reads as normal. A board that boots
+# has both variables: ValidateRootfsStatus in edk2-nvidia
+# L4TRootfsValidation.c (lines 652-663, at the meta-tegra pin's SRCREV) stops
+# the launcher when one is absent. So this case does not change a booted
+# device. If it does occur, a refusal here would stop `rauc status` and the
+# first install. A variable that is present with the wrong size is still
+# refused. The hardware proof records the real state of a freshly flashed board.
+status_read() {
+  file="$EFIVARS/RootfsStatusSlot$1-$NV_GUID"
+  if [ ! -e "$file" ]; then
+    echo normal
+    return
+  fi
+  [ -r "$file" ] || fail "cannot read $file"
+  # One read, with its own exit status. The data can hold NUL bytes, which a
+  # shell variable cannot, so it goes to a file. In a pipeline the status is
+  # the last command's, so a failed read would decode as normal.
+  data="$(mktemp "${LOCK%/*}/atc-nvbootctrl.XXXXXX")" || fail "cannot make a temporary file in ${LOCK%/*}"
+  if ! tail -c +5 "$file" > "$data"; then
+    rm -f "$data"
+    fail "cannot read $file"
+  fi
+  size="$(wc -c < "$data")"
+  value="$(tr '\000\377' 'zf' < "$data")"
+  rm -f "$data"
+  [ "$size" -eq 4 ] || fail "$file holds $((size)) data bytes, not 4"
+  if [ "$value" = fzzz ]; then echo unbootable; else echo normal; fi
+}
+
+status_write() {
+  if [ "$2" = normal ]; then data='\000\000\000\000'; else data='\377\000\000\000'; fi
+  efi_write "$EFIVARS/RootfsStatusSlot$1-$NV_GUID" "$data"
+}
+
+# AtcSlotState: one ASCII line, `steady=<A|B> trial=<none|A|B> ok=<0|1>`.
+# Sets STEADY, TRIAL and OK. Sets nothing and returns 1 when the variable is
+# absent, or 2 when it is present but cannot be read or holds any other text.
+# ok=1 needs a trial: a confirm of no slot is not a state.
+state_read() {
+  [ -e "$STATE_VAR" ] || return 1
+  line="$(tail -c +5 "$STATE_VAR" 2> /dev/null)" || return 2
+  case "$line" in
+    "steady="[AB]" trial=none ok=0" | "steady="[AB]" trial="[AB]" ok="[01]) ;;
+    *) return 2 ;;
+  esac
+  STEADY="${line#steady=}"
+  STEADY="${STEADY%% *}"
+  TRIAL="${line#* trial=}"
+  TRIAL="${TRIAL%% *}"
+  OK="${line##*ok=}"
+}
+
+state_read_or_fail() {
+  state_read || fail "cannot read $STATE_VAR, or it is not 'steady=<A|B> trial=<none|A|B> ok=<0|1>'"
+}
+
+state_write() {
+  STEADY="$1"
+  TRIAL="$2"
+  OK="$3"
+  efi_write "$STATE_VAR" '%s' "steady=$1 trial=$2 ok=$3"
+}
+
+# ── Verbs ─────────────────────────────────────────────────────────────────
+
+# Every verb that writes holds this lock. RAUC and the boot unit then cannot
+# interleave a read and a write of AtcSlotState.
+take_lock() {
+  exec 9> "$LOCK" || fail "cannot open the lock $LOCK"
+  flock 9 || fail "cannot take the lock $LOCK"
+}
+
+# RAUC's writing verbs wait for the boot decision of this boot. Before it, the
+# boot unit may still change AtcSlotState, also between two verify tries,
+# when it releases the lock.
+need_boot_done() {
+  [ -e "$BOOT_DONE" ] ||
+    fail "the boot decision of this boot has not completed; atc-tegra-slot-boot.service did not finish"
+}
+
+# $1 the verb, $2 the number of arguments it takes, $3 the number given.
+want_args() {
+  [ "$2" = "$3" ] || fail "$1 takes $2 argument(s), got $3"
+}
+
+get_state() {
+  status="$(status_read "$1")"
+  if [ "$status" = unbootable ]; then
+    echo bad
+    return
+  fi
+  booted="$(nv_current)"
+  if [ "$booted" = "$1" ]; then
+    state_read_or_fail
+    if [ "$TRIAL" = "$1" ] && [ "$OK" = 0 ]; then
+      echo bad
+      return
+    fi
+  fi
+  echo good
+}
+
+# The booted slot is confirmed when it is the steady slot, or a trial with
+# ok=1. A booted slot that is neither steady nor on trial is confirmed only
+# when its partner is unbootable: then the launcher failed over to it. With a
+# normal partner it is a switch that the state does not record, and the boot
+# unit reverts it. Uses booted, STEADY, TRIAL and OK.
+booted_confirmed() {
+  if [ "$booted" = "$STEADY" ]; then return 0; fi
+  if [ "$booted" = "$TRIAL" ]; then
+    [ "$OK" = 1 ]
+    return
+  fi
+  [ "$(status_read "$(other "$booted")")" = unbootable ]
+}
+
+# set-state X bad reads everything first, then verifies, then writes. A failed
+# read or verify refuses with no write.
+#
+# The invariant: other(X) must be a confirmed bootable slot. Its status is
+# normal, and it is the steady slot, or it is booted and confirmed. Otherwise
+# X may be the last slot that boots a confirmed image. With X marked bad, the
+# next reset would boot an unconfirmed trial, or the recovery kernel.
+#
+# The verify: while SR_RF has its magic, the launcher fails over to X on X's
+# count and ignores X's status (ValidateRootfsStatus, the non-current branch).
+# With RootfsRetryCountMax=1 the booted slot's count is 0 until a verify runs.
+# So a warm reset would mark the booted slot unbootable and fail over to X,
+# which RAUC writes. The launcher then resets with SR_RF clear, finds both
+# slots unbootable and boots the recovery kernel.
+#
+# A verify before the status write clears the magic. The next boot then sets
+# every count from the status, so X gets 0. The verify runs when X is not
+# booted and the booted slot is confirmed, for the same reason as step 3b of
+# set-primary.
+#
+# An X that is not booted and is already unbootable is accepted with no check:
+# the mark changes nothing. That is the repair of a trial whose partner is
+# unbootable. trial-slot reports no trial for it, so an install may write the
+# partner, and RAUC marks the partner bad first.
+set_state_bad() {
+  booted="$(nv_current)"
+  state_read_or_fail
+  active="$(nv_active)"
+  partner="$(other "$1")"
+  already_bad=no
+  if [ "$booted" != "$1" ] && [ "$(status_read "$1")" = unbootable ]; then
+    already_bad=yes
+  fi
+  partner_status="$(status_read "$partner")"
+  if [ "$already_bad" = no ] && [ "$partner_status" != normal ]; then
+    fail "refusing to mark the last bootable slot bad: slot $partner is $partner_status"
+  fi
+  if [ "$already_bad" = no ] && [ "$partner" != "$STEADY" ]; then
+    if [ "$partner" != "$booted" ]; then
+      fail "refusing to mark the last bootable slot bad: slot $partner is neither steady nor booted"
+    fi
+    if ! booted_confirmed; then
+      fail "refusing to mark the last bootable slot bad: slot $partner is booted but not confirmed"
+    fi
+  fi
+  # Disarm after the refusals, which write nothing, and before any write.
+  # RAUC marks the target slot bad before it writes it, so an install that
+  # stops in the write leaves no earlier install's capsule armed. When the
+  # booted slot is marked bad, the switch below goes to its partner. An armed
+  # capsule would then write the booted slot's chain at the next reset.
+  capsule_disarm
+  # When X is not booted, other(X) is the booted slot, and the checks above
+  # passed for it, so it is confirmed. For an X that is already unbootable,
+  # the booted slot can be an unconfirmed trial. The verify then only gives
+  # its count back, as the boot unit's "trial, no bootable partner" row did.
+  if [ "$booted" != "$1" ]; then
+    nvbootctrl verify ||
+      fail "nvbootctrl verify failed; slot $1 is not marked bad"
+  fi
+  # RAUC writes X next. AtcSlotState must not keep naming X as the steady slot
+  # while it holds a new image. That happens after a fall back to the booted
+  # slot whose boot-unit write failed, or after a confirm that no boot has
+  # recorded yet. Only a confirmed booted slot becomes steady here. An
+  # unconfirmed trial, in the repair above, stays a trial: set-primary X then
+  # records it as the fallback of X's trial.
+  if [ "$STEADY" = "$1" ] && [ "$booted" != "$1" ] && booted_confirmed; then
+    state_write "$booted" none 0
+  fi
+  status_write "$1" unbootable
+  if [ "$active" = "$1" ]; then
+    nv_set_active "$partner"
+  fi
+}
+
+# ok=1 goes before verify. A power cut between the two is a cold boot, which
+# refills the counter. So the slot boots again, and the boot unit records the
+# confirm. A failed verify writes ok=0 back: a confirm with no restored count
+# would depend on whether the next reset is warm or cold.
+set_state_good() {
+  booted="$(nv_current)"
+  if [ "$booted" = "$1" ]; then
+    state_read_or_fail
+    if [ "$TRIAL" = "$1" ]; then
+      state_write "$STEADY" "$1" 1
+      if ! nvbootctrl verify; then
+        state_write "$STEADY" "$1" 0
+        fail "nvbootctrl verify failed; the trial of $1 stays unconfirmed"
+      fi
+    elif [ "$STEADY" = "$1" ]; then
+      nvbootctrl verify || fail "nvbootctrl verify failed"
+    fi
+  fi
+  status_write "$1" normal
+}
+
+# The steps run in a fixed order, one block each, and each step that
+# fails stops the verb. Append a later step at the end. The order is 1 or 2,
+# then 4, then 3, 3b and 5.
+#
+# The state write goes before set-active-boot-slot. A crash between the two
+# boots the steady slot with the trial recorded, and the boot unit clears it.
+# The other order boots the new slot with no trial recorded, and an
+# unconfirmed image would run with no revert.
+#
+# The switch goes before the status write. X stays 0xFF until the chain
+# points at it. A failed or interrupted set-primary then leaves X unbootable,
+# so a later fail over cannot boot its unconfirmed image as steady.
+set_primary() {
+  booted="$(nv_current)"
+  repair=no
+
+  # Steps 1 and 2: record the trial in AtcSlotState. For the booted slot this
+  # is `rauc status mark-active booted`. A pending confirm becomes the steady
+  # slot, as in grub.cfg.
+  #
+  # Step 1 verifies first. During a trial the booted slot's count is 0. With
+  # no verify, the next warm reset fails it over, and mark-active does not
+  # last one reboot. The count is restored before the state says steady.
+  if [ "$booted" = "$1" ]; then
+    # A capsule would switch the boot chain away from the slot the operator
+    # chose. Disarm it before the state says steady: in the other order, a
+    # crash between the two boots the capsule's slot with no trial recorded.
+    capsule_disarm
+    nvbootctrl verify || fail "nvbootctrl verify failed; slot $1 is not made steady"
+    state_write "$1" none 0
+  else
+    # Step 2. The new steady slot is the booted slot when it is neither steady
+    # nor on trial. The launcher failed over to it, and the "failed over" row
+    # of the boot unit writes it as steady. Otherwise the new steady slot is
+    # the trial when ok=1, else the old steady slot. A trial never equals the
+    # steady slot: mark-active of the steady slot during a trial writes no
+    # trial.
+    #
+    # When the new steady slot is X itself, the verb aborts a trial or
+    # completes a confirm, and X is no trial. Then the state write waits until
+    # after step 4. A crash before the switch keeps the old state, so the
+    # booted trial stays a trial, and a cold boot cannot make it steady.
+    #
+    # The repair of a trial whose partner X is unbootable: X is the steady
+    # slot, and an install wrote it, or X failed to boot. Either way its image
+    # must pass a dwell again, so X boots as a trial. The booted trial is the
+    # only other image that boots, so it is the fallback. With X normal, X
+    # holds the confirmed image, and the verb aborts the trial as before.
+    state_read_or_fail
+    if [ "$booted" != "$STEADY" ] && [ "$booted" != "$TRIAL" ] && booted_confirmed; then
+      new_steady="$booted"
+    elif [ "$OK" = 1 ]; then
+      new_steady="$TRIAL"
+    elif [ "$booted" = "$TRIAL" ] && [ "$STEADY" = "$1" ] && [ "$(status_read "$1")" = unbootable ]; then
+      new_steady="$booted"
+      repair=yes
+    else
+      new_steady="$STEADY"
+    fi
+    if [ "$new_steady" != "$1" ]; then
+      state_write "$new_steady" "$1" 0
+    fi
+  fi
+
+  # Step 4: switch the bootloader chain. With a staged capsule, the switch is
+  # the capsule: UEFI applies it to the chain that did not boot, which is X's,
+  # and boots that chain. set-active-boot-slot as well would boot X's chain
+  # first, so the capsule would write the booted slot's chain. So with a
+  # capsule, step 4 is the arm, and it runs last (step 6): it commits the
+  # install, and a failure before it leaves nothing that the next reboot
+  # applies.
+  capsule=no
+  if [ "$booted" != "$1" ] && capsule_staged "$1"; then
+    capsule=yes
+  else
+    nv_set_active "$1"
+  fi
+
+  # Step 3: a slot that is marked unbootable does not boot until this clears.
+  status_write "$1" normal
+
+  # Step 3b: refill X's retry count. A fall back leaves X's SR_RF count at 0,
+  # and the status write in step 3 counts only once SR_RF has no magic (see
+  # nv_set_active). `nvbootctrl verify` clears the magic and both counts, so
+  # the next boot refills X's count from step 3. The boot unit's
+  # verify normally did this already; this covers a boot unit that did not
+  # run. Skip it when X is booted. Skip it when the booted slot is an
+  # unconfirmed trial: a refill there lets X fall back onto that trial. The
+  # repair writes that trial as STEADY in step 2, so it is skipped by name. The
+  # boot unit's "trial, no bootable partner" row verified in this boot.
+  if [ "$booted" != "$1" ] && [ "$booted" = "$STEADY" ] && [ "$repair" = no ]; then
+    nvbootctrl verify ||
+      fail "nvbootctrl verify failed; slot $1 may keep a spent retry count"
+  fi
+
+  # Step 5: the deferred state write of step 2.
+  if [ "$booted" != "$1" ] && [ "$new_steady" = "$1" ]; then
+    state_write "$1" none 0
+  fi
+
+  # Step 6: arm the capsule, the switch of step 4.
+  if [ "$capsule" = yes ]; then
+    # The capsule writes the chain that does not run at the next reset. That
+    # is X's chain only while the next reset still runs the booted chain.
+    if [ "$(nv_active)" != "$booted" ]; then
+      fail "the boot chain already points at slot $(nv_active); a capsule armed now would write the chain of slot $booted"
+    fi
+    capsule_arm "$1"
+  fi
+}
+
+# A trial counts only while it is booted. A recorded trial that never booted
+# (a failed step 4 of set-primary, or no reboot yet) is not in flight. If it
+# were, atc-os-pre-install would refuse every later install.
+trial_slot() {
+  state_read_or_fail
+  booted="$(nv_current)"
+  if [ "$TRIAL" != "$booted" ] || [ "$OK" != 0 ]; then
+    echo none
+    return
+  fi
+  # A trial whose partner is marked unbootable has no revert target. atcd's
+  # reject then fails (set-state bad refuses the last bootable slot), and a
+  # deadline reboot would boot the same slot again, every 15 minutes. So
+  # report no trial in flight. The deadline then does not reboot, and the
+  # pre-install guard lets an install write the partner, the only repair.
+  # get-state still reads the trial bad, so RAUC reports it unconfirmed.
+  if [ "$(status_read "$(other "$booted")")" = unbootable ]; then
+    echo none
+    return
+  fi
+  echo "$TRIAL"
+}
+
+# Prints yes when other(booted) can boot at the next reset: its status is
+# normal and its SR_RF count is not 0. The launcher judges a fail over by the
+# count alone while the magic is set.
+partner_bootable() {
+  partner="$(other "$booted")"
+  partner_status="$(status_read "$partner")"
+  partner_count="$(nv_count "$partner")"
+  if [ "$partner_status" = normal ] && [ "$partner_count" -gt 0 ]; then echo yes; else echo no; fi
+}
+
+# $1 the row of the boot table that asks for the verify. Until the verify
+# succeeds, the booted slot's count stays at 0, so the next warm reset fails
+# it over. With a bootable partner that is a fall back. So the unit gives up
+# after VERIFY_TRIES, and systemd restarts it (Restart=on-failure).
+#
+# With no bootable partner, that warm reset ends in the recovery kernel. So
+# the verify retries once a second with no limit. Between two tries the unit
+# releases the lock, so RAUC and atcd do not wait. Then it runs the whole boot
+# decision again from a new read. A partner that cannot be read counts
+# as not bootable here: the cost is only more tries.
+boot_verify() {
+  bootable=""
+  try=1
+  while ! nvbootctrl verify; do
+    if [ -z "$bootable" ]; then
+      bootable="$( (partner_bootable) 2> /dev/null || echo no)"
+    fi
+    if [ "$bootable" = yes ]; then
+      if [ "$try" -ge "$VERIFY_TRIES" ]; then
+        echo "atc-nvbootctrl-backend: boot: row '$1': nvbootctrl verify failed $VERIFY_TRIES times; the slot keeps its spent count, so the reboot requested now falls back to slot $(other "$booted")" >&2
+        # shellcheck disable=SC2086  # REBOOT is a command and its arguments
+        $REBOOT || echo "atc-nvbootctrl-backend: boot: row '$1': the reboot could not be requested; the next warm reset falls back" >&2
+        exit "$EXIT_GAVE_UP"
+      fi
+      try=$((try + 1))
+    else
+      if [ -z "${ATC_NVBOOTCTRL_RETRY:-}" ]; then
+        echo "atc-nvbootctrl-backend: boot: row '$1': nvbootctrl verify failed and slot $(other "$booted") cannot boot; retrying until it succeeds" >&2
+      fi
+      flock -u 9
+      sleep 1
+      export ATC_NVBOOTCTRL_RETRY=1
+      exec sh "$0" boot
+    fi
+  done
+}
+
+# $1 the row. Revert to the partner, which partner_bootable just judged
+# bootable. Do what the launcher does at a fail over: mark the booted slot
+# unbootable and point the chain at the partner. Then request the reboot. The
+# revert then holds whether that reboot keeps SR_RF or clears it.
+revert_to_partner() {
+  status_write "$booted" unbootable
+  nv_set_active "$(other "$booted")"
+  # shellcheck disable=SC2086  # REBOOT is a command and its arguments
+  if ! $REBOOT; then
+    echo "atc-nvbootctrl-backend: boot: $1, and the reverting reboot could not be requested; the next reset falls back to slot $(other "$booted")" >&2
+    exit "$EXIT_REVERTING"
+  fi
+}
+
+# One journal line for each row that the boot unit completes.
+say() { echo "atc-nvbootctrl-backend: boot: $*"; }
+
+# The boot table of atc-tegra-slot-boot.service. The first matching row wins,
+# and "continue" evaluates the rows below with the new state.
+boot() {
+  # The first check of the verb. A second run in the same boot comes from a
+  # restart of the unit, or from `systemctl restart`. It must not decide
+  # again: it would read a trial that RAUC recorded in this boot as spent.
+  if [ -e "$BOOT_DONE" ]; then
+    say "the boot decision of this boot is already made"
+    return
+  fi
+  booted="$(nv_current)"
+  # UEFI processed any capsule at this reset, or it did not. Either way, a
+  # bit still set would apply the staged file at some later reboot, outside
+  # any install. Clear it. The staged file stays: it does no harm without the
+  # bit, and the next install replaces it. A failure here does not stop the
+  # boot decision below.
+  if [ -x "$CAPSULE_TOOL" ] && ! "$CAPSULE_TOOL" clear-bit >&2; then
+    echo "atc-nvbootctrl-backend: boot: WARNING: cannot clear OsIndications bit 2" >&2
+  fi
+  if state_read; then read_status=0; else read_status=$?; fi
+  # Only an absent variable is a first boot. A variable that is present but
+  # unreadable may hold a trial in flight, and the first-boot row would make
+  # that unconfirmed image steady. So with a bootable partner the unit writes
+  # nothing and does not verify: the next warm reset reverts to the partner.
+  #
+  # With an unbootable partner there is no revert target, and each warm reset
+  # would take the booted slot's last try, then boot the recovery kernel. So
+  # the booted slot is the last bootable one: verify it and make it steady.
+  if [ "$read_status" = 2 ]; then
+    # A partner that cannot be read counts as not bootable, as in
+    # boot_verify. Then the booted slot is the last slot this unit can trust.
+    bootable="$( (partner_bootable) 2> /dev/null || echo no)"
+    if [ "$bootable" = yes ]; then
+      # The image may be an unconfirmed trial, so revert now. The booted slot
+      # keeps its spent count, and the warm reset fails over to the partner.
+      echo "atc-nvbootctrl-backend: boot: WARNING: $STATE_VAR is present but cannot be read, or it is not 'steady=<A|B> trial=<none|A|B> ok=<0|1>'; rebooting to revert to slot $(other "$booted")" >&2
+      revert_to_partner "corrupt state"
+      echo "atc-nvbootctrl-backend: boot: corrupt state; wrote nothing, and requested a reboot to revert to slot $(other "$booted")" >&2
+      exit "$EXIT_REVERTING"
+    fi
+    echo "atc-nvbootctrl-backend: boot: WARNING: $STATE_VAR cannot be used and slot $(other "$booted") cannot boot; slot $booted is the last bootable slot, so it becomes steady" >&2
+    boot_verify "corrupt state, last bootable slot"
+    state_write "$booted" none 0
+    say "corrupt state rewritten, slot $booted is steady"
+    return
+  fi
+  if [ "$read_status" = 1 ]; then
+    boot_verify "first boot"
+    state_write "$booted" none 0
+    say "first boot, slot $booted is steady"
+    return
+  fi
+  if [ "$TRIAL" != none ] && [ "$OK" = 1 ]; then
+    trial_status="$(status_read "$TRIAL")"
+    if [ "$trial_status" = normal ]; then
+      state_write "$TRIAL" none 0
+      say "confirmed, slot $STEADY is steady"
+    else
+      lost="$TRIAL"
+      state_write "$STEADY" none 0
+      say "confirm lost, slot $lost is unbootable"
+    fi
+  fi
+  if [ "$booted" = "$STEADY" ]; then
+    if [ "$TRIAL" != none ]; then
+      spent="$TRIAL"
+      # A set-primary of the trial slot ran after this reset. That trial has
+      # not booted yet, so keep it. This check goes before any write.
+      active="$(nv_active)"
+      if [ "$active" = "$spent" ]; then
+        boot_verify "spent"
+        say "steady, slot $booted; the new trial of $spent boots next"
+        return
+      fi
+      # The spent trial never confirmed. Without a capsule the launcher
+      # already marked it unbootable, and this write changes nothing. With a
+      # capsule, set-primary wrote the trial slot normal before the arm. An
+      # arm that failed, or a capsule that UEFI did not apply, leaves it
+      # normal with a count and an unconfirmed image.
+      #
+      # The status goes BEFORE the verify. A verify that fails then finds no
+      # bootable partner and retries until it succeeds. With the trial still
+      # normal, it gave up and requested a reboot, and that warm reset fell
+      # over into the trial's image. The verify goes before the state write:
+      # a unit that fails here and restarts still finds the spent row.
+      status_write "$spent" unbootable
+      boot_verify "spent"
+      state_write "$STEADY" none 0
+      say "the trial of $spent is spent, slot $booted is steady"
+    else
+      boot_verify "steady"
+      say "steady, slot $booted"
+    fi
+  elif [ "$booted" = "$TRIAL" ]; then
+    # With no bootable partner the trial is the last bootable slot. Its count
+    # is 0 after this boot, so the next warm reset would boot the recovery
+    # kernel. Verify, to give the count back. AtcSlotState keeps the trial
+    # unconfirmed: only atcd's confirm makes it steady. A partner that cannot
+    # be read counts as not bootable, as in boot_verify.
+    bootable="$( (partner_bootable) 2> /dev/null || echo no)"
+    if [ "$bootable" != yes ]; then
+      boot_verify "trial, no bootable partner"
+      say "trial in flight, slot $booted; slot $(other "$booted") cannot boot, so the trial's count is back"
+      return
+    fi
+    say "trial in flight, slot $booted"
+  else
+    # The booted slot is neither steady nor on trial. With an unbootable
+    # partner the launcher failed over to it, so it becomes steady. With a
+    # bootable partner, the state does not record the switch to it. An example
+    # is a set-primary that aborted a trial and crashed, then a cold boot. That
+    # image may not have passed atcd's dwell. So revert it, as for a corrupt
+    # state: no write, no verify, and a reboot.
+    # A partner that cannot be read counts as not bootable, as in
+    # boot_verify. Then the booted slot is the last slot this unit can trust.
+    bootable="$( (partner_bootable) 2> /dev/null || echo no)"
+    if [ "$bootable" = yes ]; then
+      echo "atc-nvbootctrl-backend: boot: WARNING: slot $booted is neither steady nor on trial, and slot $(other "$booted") can boot; rebooting to revert" >&2
+      revert_to_partner "unrecorded slot"
+      echo "atc-nvbootctrl-backend: boot: slot $booted is not recorded; wrote nothing, and requested a reboot to revert to slot $(other "$booted")" >&2
+      exit "$EXIT_REVERTING"
+    fi
+    boot_verify "failed over"
+    state_write "$booted" none 0
+    say "failed over, slot $booted is steady"
+  fi
+}
+
+VERBS="get-current, get-primary, set-primary, get-state, set-state, trial-slot and boot"
+verb="${1:-}"
+if [ $# -gt 0 ]; then shift; fi
+case "$verb" in
+  get-current)
+    want_args "$verb" 0 $#
+    nv_current
+    ;;
+  get-primary)
+    want_args "$verb" 0 $#
+    # An armed capsule switches the chain at the next boot, so the next boot
+    # loads the slot that did not boot. nvbootctrl does not know it yet.
+    armed="$(capsule_armed_slot)"
+    if [ -n "$armed" ]; then echo "$armed"; else nv_active; fi
+    ;;
+  get-state)
+    want_args "$verb" 1 $#
+    slot_number "$1" > /dev/null
+    get_state "$1"
+    ;;
+  set-state)
+    want_args "$verb" 2 $#
+    slot_number "$1" > /dev/null
+    case "$2" in
+      good | bad) ;;
+      *) fail "unknown state '$2'; the states are good and bad" ;;
+    esac
+    take_lock
+    need_boot_done
+    if [ "$2" = good ]; then set_state_good "$1"; else set_state_bad "$1"; fi
+    ;;
+  set-primary)
+    want_args "$verb" 1 $#
+    slot_number "$1" > /dev/null
+    take_lock
+    need_boot_done
+    set_primary "$1"
+    ;;
+  trial-slot)
+    want_args "$verb" 0 $#
+    trial_slot
+    ;;
+  boot)
+    want_args "$verb" 0 $#
+    take_lock
+    boot
+    : > "$BOOT_DONE" || fail "boot: cannot write $BOOT_DONE"
+    ;;
+  "") fail "no verb; the verbs are $VERBS" ;;
+  *) fail "unknown verb '$verb'; the verbs are $VERBS" ;;
+esac
