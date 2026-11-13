@@ -1,0 +1,33 @@
+name: test
+
+# Run tests/run.sh: the repository gates, their self-tests, the self-test of
+# each builder-box driver, the tests of the on-device scripts, and the model
+# check of the nvbootctrl backend. No Yocto build runs here.
+#
+# The checks that compare this layer with the atc source do not run here.
+# They need a checkout of that source, and this job has no credential to read
+# one (README, "Verification").
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Install the tools the tests call
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q ripgrep
+      - name: Run the tests
+        run: tests/run.sh

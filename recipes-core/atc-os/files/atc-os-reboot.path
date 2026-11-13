@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch for an OS update reboot request from atcd
+# The request lives in the store, on the data partition.
+RequiresMountsFor=/var/atc
+
+[Path]
+# atcd runs as user atc and cannot reboot through logind without polkit. Only
+# atcd can write the store, so only atcd can create this file.
+PathExists=/var/atc/os/reboot-request
+
+[Install]
+WantedBy=multi-user.target

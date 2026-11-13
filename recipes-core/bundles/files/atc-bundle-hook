@@ -1,0 +1,204 @@
+#!/bin/sh
+# The atc bundle hook. RAUC runs it as root during an install.
+#
+# slot-post-install: carry the device-local state that `atc bootstrap` writes
+# from the running rootfs into the new slot.
+#
+# No image can carry that state, because bootstrap writes it per device: the
+# atcd unit and its drop-ins, the enrollment token, the CA bundle, the config,
+# the sudoers file and the hook user's subordinate ids. Without it, the new
+# slot boots with no atcd or with no way to reach the server, no check-in can
+# complete, and every update reverts. RAUC mounts the new slot for this hook at
+# RAUC_SLOT_MOUNT_POINT. atcd itself runs from the store on /var/atc, which
+# both slots mount, so the binary needs no copy.
+#
+# Three more paths keep the push plane open after a slot switch. An end to
+# end run found each one on a live qemu device:
+# - /usr/local/bin/atcd: atc runs `/usr/local/bin/atcd attach` over ssh, and
+#   bootstrap writes that link into the store. Without it the new slot answers
+#   no push.
+# - /etc/ssh/ssh_host_*: sshd makes its host keys at the first boot of each
+#   slot. A new key makes every operator's ssh refuse the device, since atc
+#   connects with StrictHostKeyChecking=accept-new.
+# - /home/*/.ssh: the operator's key for the deploy user. The image ships one
+#   only when the build sets ATC_DEPLOY_SSH_KEY.
+#
+# `atcd --setup-rootless` writes into the rootfs too: a sysctl drop-in, an
+# AppArmor profile on a host that has AppArmor, and the setuid podman helpers
+# with their anti-rollback pin under /usr/local/libexec/atc-podman. It also
+# writes the hook user's delegate drop-in in user@<uid>.service.d and the
+# linger record, which the rules above carry. Without them rootless podman
+# fails on the new slot. A device that never ran setup has none of these
+# paths, so the hook carries none, and an update does not turn rootless on.
+#
+# THE NEW IMAGE WINS. A path is carried only when the new slot does not ship
+# it, so a file the image owns is never replaced by the old slot's copy.
+# /etc/subuid and /etc/subgid are the exception: bootstrap appends lines to
+# files the image ships, so their missing lines are appended.
+#
+# tests/atc-bundle-hook_test.sh fails when bootstrap or
+# setup-rootless names a path under /etc, /var/lib or /usr/local that the list
+# below does not cover. When either starts to write a new file, extend the
+# list, not the test.
+set -eu
+
+# A directory this hook creates must be 0755, not narrower. The podman resolver
+# refuses a helper whose parent directory is group- or world-writable, and a
+# directory it cannot traverse hides the helpers.
+umask 022
+
+# Read the list from here, one path or glob per line. The test reads the same
+# lines between the two markers.
+CARRY='
+# BEGIN CARRY
+/etc/atc
+/etc/sudoers.d/atc-shell
+/etc/systemd/system/*.service
+/etc/systemd/system/*.service.d
+/etc/systemd/system/*.target.wants/*.service
+/var/lib/systemd/linger
+/usr/local/bin/atcd
+/etc/ssh/ssh_host_*
+/home/*/.ssh
+/usr/local/libexec/atcd-boot-confirm.sh
+/usr/local/libexec/.atcd-settings-restore
+/etc/sysctl.d/70-atc-podman-rootless.conf
+/etc/apparmor.d/atc_podman
+/usr/local/libexec/atc-podman
+# END CARRY
+'
+MERGE='/etc/subuid /etc/subgid'
+
+# The source root. Tests point it at a fixture. RAUC runs the hook with "/".
+SOURCE="${ATC_HOOK_SOURCE_ROOT:-}"
+
+# Carry one path, relative to the source root, into the new slot at $target.
+# A path the new slot lacks is copied whole. A directory both sides have is
+# walked, and each child is carried the same way. Anything else the new slot
+# has stays. No cp flag does this on every coreutils: -n exits 1 on a skipped
+# file in 9.2 to 9.4, and --update=none does not exist before 9.3.
+carry() {
+  if [ -e "$target$1" ] || [ -L "$target$1" ]; then
+    if [ -d "$target$1" ] && [ ! -L "$target$1" ] &&
+      [ -d "$SOURCE$1" ] && [ ! -L "$SOURCE$1" ]; then
+      for child in "$SOURCE$1"/* "$SOURCE$1"/.[!.]*; do
+        [ -e "$child" ] || [ -L "$child" ] || continue
+        carry "$1/${child##*/}"
+      done
+    fi
+    return 0
+  fi
+  mkdir -p "$target$(dirname "$1")"
+  # -a: keep modes, owners and links.
+  cp -a "$SOURCE$1" "$target$1"
+  echo "atc-bundle-hook: carried $1"
+}
+
+# The unit globs also match files the image owns. A unit under
+# /etc/systemd/system is device-local only when it is a regular file: the image
+# writes its enable links and masks there as symbolic links. A wants link or a
+# drop-in directory is device-local only when it belongs to such a unit. Without this, a unit or a
+# link that the new image dropped on purpose would come back from the old slot.
+device_local() {
+  case "$1" in
+    /etc/systemd/system/*.target.wants/*)
+      [ -L "$SOURCE$1" ] || return 1
+      link="$(readlink "$SOURCE$1")"
+      case "$link" in /etc/systemd/system/*) ;; *) return 1 ;; esac
+      [ -f "$SOURCE$link" ] && [ ! -L "$SOURCE$link" ]
+      ;;
+    /etc/systemd/system/*.service)
+      [ -f "$SOURCE$1" ] && [ ! -L "$SOURCE$1" ]
+      ;;
+    /etc/systemd/system/user@[0-9]*.service.d)
+      # The hook user's stop-timeout drop-in, by numeric uid. The uid is fixed
+      # by the image. The template user@.service.d does not match here.
+      return 0
+      ;;
+    /etc/systemd/system/*.service.d)
+      # A drop-in directory is device-local only beside a device-local unit.
+      unit="${1%.d}"
+      [ -f "$SOURCE$unit" ] && [ ! -L "$SOURCE$unit" ]
+      ;;
+    *) return 0 ;;
+  esac
+}
+
+# A carried ~/.ssh belongs to its user as the NEW slot's /etc/passwd names
+# them. sshd refuses a key whose owner is not the account, and cp -a kept the
+# old slot's numbers. The host keys under /etc/ssh stay root's.
+own_home_ssh() {
+  case "$1" in
+    /home/*/.ssh) ;;
+    *) return 0 ;;
+  esac
+  user="${1#/home/}"
+  user="${user%/.ssh}"
+  ids="$(awk -F: -v u="$user" '$1 == u { print $3 ":" $4 }' "$target/etc/passwd" 2> /dev/null)"
+  [ -n "$ids" ] || return 0
+  chown -R "$ids" "$target$1"
+}
+
+merge_lines() {
+  file="$1" target="$2"
+  [ -f "$SOURCE$file" ] || return 0
+  touch "$target$file"
+  while IFS= read -r line; do
+    grep -qxF -- "$line" "$target$file" || printf '%s\n' "$line" >> "$target$file"
+  done < "$SOURCE$file"
+}
+
+# Jetson only: put the bundle's UEFI capsule on the ESP, bound to the slot this
+# hook runs for, and not armed. The capsule switches the boot chain, and the
+# rootfs slot follows it, so the firmware and the rootfs this bundle carries
+# go live together. The nvbootctrl backend arms it at set-primary of that
+# slot, the last step of an install.
+#
+# A device with the tool is a Jetson, and its firmware must move with its
+# rootfs. A bundle there with no capsule is refused: the install would boot a
+# new rootfs on the old firmware. The refusal disarms first, so set-primary
+# cannot arm firmware from an earlier bundle either. A device without the tool
+# takes a bundle with no capsule.
+stage_capsule() {
+  tool="${ATC_TEGRA_CAPSULE:-/usr/libexec/atc-os/atc-tegra-capsule}"
+  capsule="${RAUC_BUNDLE_MOUNT_POINT:-}/tegra-bl.cap"
+  if [ -n "${RAUC_BUNDLE_MOUNT_POINT:-}" ] && [ -f "$capsule" ]; then
+    if [ ! -x "$tool" ]; then
+      echo "atc-bundle-hook: the bundle carries a UEFI capsule, and $tool is missing" >&2
+      exit 1
+    fi
+    "$tool" stage "$capsule" "${RAUC_SLOT_BOOTNAME:?RAUC set no RAUC_SLOT_BOOTNAME}"
+  elif [ -x "$tool" ]; then
+    "$tool" disarm
+    echo "atc-bundle-hook: this Jetson needs a bundle with tegra-bl.cap; the bundle has none" >&2
+    exit 1
+  fi
+}
+
+case "${1:-}" in
+  slot-post-install)
+    [ "${RAUC_SLOT_CLASS:-}" = rootfs ] || exit 0
+    target="${RAUC_SLOT_MOUNT_POINT:?RAUC set no RAUC_SLOT_MOUNT_POINT}"
+    # A here-document keeps the loop in this shell. Under `set -e` a failed
+    # copy or chown ends the hook, and RAUC fails the install.
+    while IFS= read -r pattern; do
+      case "$pattern" in '' | '#'*) continue ;; esac
+      # The glob expands against the running rootfs.
+      for path in $SOURCE$pattern; do
+        [ -e "$path" ] || [ -L "$path" ] || continue
+        device_local "${path#"$SOURCE"}" || continue
+        carry "${path#"$SOURCE"}"
+        own_home_ssh "${path#"$SOURCE"}"
+      done
+    done << EOF
+$CARRY
+EOF
+    for file in $MERGE; do
+      merge_lines "$file" "$target"
+    done
+    stage_capsule
+    ;;
+  *)
+    exit 0
+    ;;
+esac

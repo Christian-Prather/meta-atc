@@ -1,0 +1,73 @@
+# atc A/B slot layout for a disk-booted qemu guest.
+#
+# Four partitions, GPT. The ESP carries GRUB, our grub.cfg, and the boot
+# environment. The two rootfs slots are identical at build time: wic writes
+# the same rootfs into both, so a fresh image boots slot A and holds a
+# known-good slot B. The data partition holds the store.
+#
+# WHY THE STORE NEEDS ITS OWN PARTITION. atcd and its store live inside the
+# rootfs. An OS update replaces a whole slot, so a store inside that slot is
+# replaced with it. The device would lose its device id, its CAS, and its
+# delivery history on every OS update. /var/atc therefore mounts from a
+# partition no slot owns. The OS tier depends on it.
+#
+# THE LABELS AND THE ORDER ARE THE CONTRACT. grub.cfg finds the ESP by label,
+# finds a slot by its partition NUMBER on the ESP's disk (gpt2 for A, gpt3 for
+# B), and passes the slot's label as root=. RAUC's system.conf names the two
+# slot devices by PARTLABEL. scripts/check-atc-ab-layout.sh reads all
+# three files and fails when they disagree, the order of the parts included.
+#
+# ONE `--label` FEEDS TWO DIFFERENT NAMESPACES. wic passes the value to mkfs as
+# the FILESYSTEM label, and on a GPT table it also writes it as the PARTITION
+# name. The kernel's `root=PARTLABEL=` and RAUC's by-partlabel devices match the
+# partition name, which no update changes. The filesystem label of a slot is
+# gone after the first install: RAUC writes the bundle's ext4 image, which names
+# no slot. That is why grub.cfg does not search for a slot by label.
+bootloader --ptable gpt --timeout=1
+
+# The ESP. bootimg-efi generates its own EFI/BOOT/grub.cfg here, and
+# atc-image-ab.bb overwrites it through IMAGE_EFI_BOOT_FILES, which the plugin
+# copies AFTER the generated config is written. The `configfile` sourceparam
+# would be the other route. It is not used: its path resolution searches the
+# scripts directory and the layer by a rule this layer would have to match, and
+# two mechanisms writing one file is a race nobody can read off the wks.
+# NO MOUNTPOINT ON THIS PART, AND THAT IS THE POINT.
+#
+# wic writes an /etc/fstab line for every part that HAS a mountpoint, and the
+# device it writes is `/dev/<disk><n>` with the disk defaulting to `sda` unless
+# the part carries --use-uuid or --use-label (poky
+# scripts/lib/wic/plugins/imager/direct.py, update_fstab). This image boots off
+# virtio, so that line names /dev/sda1 on a machine whose disk is /dev/vda.
+#
+# Measured on the first boot with a working serial console: systemd waited on a
+# start job for /dev/sda1 for 90 seconds. The guest was otherwise healthy, and
+# /var/atc had mounted correctly, because the image writes its own PARTLABEL
+# line for that one and it won.
+#
+# Dropping the mountpoint makes wic skip the part entirely, so
+# atc-ab-runtime.inc owns every fstab line and every one of them is a
+# PARTLABEL. That matches `root=PARTLABEL=` on the kernel command line and the
+# labels grub.cfg searches, so the whole image addresses partitions one way.
+part --source bootimg-efi --sourceparams="loader=grub-efi" --label atcesp --active --align 1024 --fixed-size 64M
+
+# Slot A. `--source rootfs` appears twice, which writes the SAME rootfs into
+# both slots.
+part / --source rootfs --fstype=ext4 --label atcroota --align 1024 --fixed-size 1024M
+
+# Slot B, seeded identical so the first update has a known-good slot to revert
+# to. `floor_flip_has_recoverable_prior` refuses to flip into a floor with no
+# prior delivery for the same reason. A crash loop with nothing to fall back on
+# is a stable brick.
+part --source rootfs --fstype=ext4 --label atcrootb --align 1024 --fixed-size 1024M
+
+# The store. Mounted at /var/atc by the fstab entry atc-ab-runtime.inc adds,
+# and for the reason above this part carries no mountpoint either.
+#
+# 4096 MiB, not 512. An OS update lands in the store as a bundle, and the
+# store's disk budget asks for the bundle plus a 1 GiB margin. On 512 MiB every
+# OS push failed at every size. The .wic file stays sparse.
+#
+# The rootfs must NOT pre-create the directory: `atcd install-self` creates the
+# tree with the modes the traverse-grant walk expects, and systemd creates a
+# missing mount point on its own.
+part --fstype=ext4 --label atcdata --align 1024 --fixed-size 4096M

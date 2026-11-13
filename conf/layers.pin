@@ -1,0 +1,24 @@
+# The layers meta-atc depends on beyond poky, one per line:
+#
+#   <name> <url> <branch> <commit> [<machine-override>]
+#
+# The commit is the pin and must be 40 hex characters. A branch name or a short
+# hash moves under a build, and two builds of one tree then differ.
+# scripts/checkout-layers.sh checks out exactly this commit, and
+# scripts/check-meta-atc-recipe.sh refuses any other shape.
+#
+# The optional fifth field names the MACHINEOVERRIDES entry that needs the
+# layer. A line without it goes into every build. A line with it goes only into
+# a build for that machine family: `checkout-layers.sh --for <override>` adds
+# it, and a plain `checkout-layers.sh` leaves it out. So the qemu builds never
+# parse meta-tegra, and their recipe set does not change.
+#
+# meta-rauc scarthgap carries RAUC 1.15.2. That version is the floor: it fixes
+# CVE-2026-34155, and `require-manifest-hash` needs 1.14 or later.
+meta-rauc https://github.com/rauc/meta-rauc.git scarthgap d63878f20eba7a85ecf53566e7a3377e78bb46ac
+
+# OE4T meta-tegra scarthgap is the BSP for the Jetson Orin family (Nano, NX and
+# AGX). This commit carries L4T R36.5.2 (classes/l4t_version.bbclass). Its
+# LAYERDEPENDS is `core` only. meta-atc names it in LAYERRECOMMENDS, not
+# LAYERDEPENDS, so a qemu build does not need it.
+meta-tegra https://github.com/OE4T/meta-tegra.git scarthgap e7d217e24ca9943e959e80da78a6025fe1373908 tegra234

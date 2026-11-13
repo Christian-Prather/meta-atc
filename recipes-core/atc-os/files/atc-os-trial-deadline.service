@@ -1,0 +1,7 @@
+[Unit]
+Description=Reboot the booted slot if RAUC does not report it good
+After=rauc.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/atc-os/atc-os-trial-deadline
