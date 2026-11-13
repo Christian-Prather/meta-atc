@@ -54,7 +54,23 @@ MACHINE=qemux86-64 bitbake atc-image
 
 ## Supply atcd
 
-The layer does not compile atcd. Point it at a prebuilt, static atcd for the
+The layer does not compile atcd. By default, the atcd recipe downloads the
+current `stable` release with `install-atcd.sh`. The script checks the
+release signature and the binary's sha256 before the recipe installs it. The
+build needs network access to `https://atc.dev`.
+
+To pin a release, or to take another track:
+
+```
+ATCD_VERSION = "0.4.2"
+ATCD_TRACK = "nightly"
+```
+
+Without `ATCD_VERSION`, the download runs on every build, so the image gets
+the track's current release. With it, the build fails when the track serves
+another version.
+
+To build in your own atcd instead, point the layer at a static binary for the
 target architecture:
 
 ```
@@ -69,9 +85,11 @@ ATCD_BINARY_X86_64 = "/abs/path/to/x86_64/atcd"
 ATCD_BINARY_AARCH64 = "/abs/path/to/aarch64/atcd"
 ```
 
-The build fails if the binary's architecture does not match the machine. With
-no binary, the image carries only the guard, and `atc bootstrap atcd install`
-installs atcd on first contact.
+The build fails if the binary's architecture does not match the machine.
+
+For an image with no atcd, set `ATCD_TRACK = ""`. The image then carries
+only the guard, and `atc bootstrap atcd install` installs atcd on first
+contact.
 
 ## Build
 
@@ -107,7 +125,9 @@ whole-disk image written to a running device erases its store and its identity.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `ATCD_BINARY`, `ATCD_BINARY_X86_64`, `ATCD_BINARY_AARCH64` | empty | the atcd binary to install |
+| `ATCD_TRACK` | `stable` | the release track the atcd download takes. Empty: no atcd |
+| `ATCD_VERSION` | empty | the atcd release to require. Empty: the track's current one |
+| `ATCD_BINARY`, `ATCD_BINARY_X86_64`, `ATCD_BINARY_AARCH64` | empty | a prebuilt atcd to install in place of the download |
 | `ATC_DEPLOY_USER` | `atc-deploy` | the account that atc logs in as |
 | `ATC_DEPLOY_SSH_KEY` | empty | an SSH public key to install for that account |
 | `ATC_OS_VERSION` | empty | the version that the bundle and `/etc/atc-os-version` carry |
