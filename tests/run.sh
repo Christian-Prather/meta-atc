@@ -2,21 +2,17 @@
 # tests/run.sh
 #
 # Run every check of this repository that needs no Yocto builder. That is the
-# two repository gates and their self-tests, and the self-test of each
-# builder-box driver. It is also the tests of the on-device scripts, and the
-# model check of the nvbootctrl backend. CI runs this script, and so can you.
+# two repository gates and their self-tests, and the self-test of each build
+# driver. It is also the tests of the on-device scripts, and the model check of
+# the nvbootctrl backend. CI runs this script, and so can you.
 #
 # Each check runs even when an earlier one fails. The script exits 1 when any
 # check failed, and names each one.
 #
 # Usage: tests/run.sh
-#   ATC_MONOREPO  a checkout of the atc source. Optional. With it, the recipe
-#                 gate also compares the layer with that source, and the
-#                 bundle-hook test also runs its coverage part.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MONO="${ATC_MONOREPO:-}"
 failed=()
 
 run() {
@@ -31,12 +27,7 @@ run() {
   fi
 }
 
-hook_srcs=()
-if [ -n "$MONO" ]; then
-  hook_srcs=("$MONO/crates/atc-cmd-bootstrap/src" "$MONO/crates/atcd/src/setup_rootless")
-fi
-
-run "recipe gate, real layer" env META_ATC_ROOT="$ROOT" ATC_MONOREPO="$MONO" \
+run "recipe gate, real layer" env META_ATC_ROOT="$ROOT" \
   bash "$ROOT/scripts/check-meta-atc-recipe.sh"
 run "recipe gate, self-test" bash "$ROOT/tests/check-meta-atc-recipe_test.sh" \
   "$ROOT/scripts/check-meta-atc-recipe.sh"
@@ -49,7 +40,7 @@ for s in checkout-layers rauc-test-keys qemu-rauc-proof qemu-rauc-faults tegra-b
 done
 
 run "bundle hook" bash "$ROOT/tests/atc-bundle-hook_test.sh" \
-  "$ROOT/recipes-core/bundles/files/atc-bundle-hook" "${hook_srcs[@]+"${hook_srcs[@]}"}"
+  "$ROOT/recipes-core/bundles/files/atc-bundle-hook"
 run "Tegra capsule tool" bash "$ROOT/tests/atc-tegra-capsule_test.sh" \
   "$ROOT/recipes-bsp/atc-tegra-capsule/files/atc-tegra-capsule" \
   "$ROOT/recipes-core/bundles/files/atc-bundle-hook"
