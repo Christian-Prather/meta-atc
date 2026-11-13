@@ -6,8 +6,8 @@
 # fails when the two disagree.
 #
 # Three drift classes it catches:
-#   1. the guard copy in this layer diverging from the atc source's
-#      tools/scripts/atcd-boot-confirm.sh;
+#   1. the guard copy or the install-atcd.sh copy in this layer diverging
+#      from the atc source's tools/scripts/;
 #   2. a recipe path diverging from the constant that declares it in the atc
 #      source's crates/atc-cmd-bootstrap/src/bootstrap_daemon/consts.rs;
 #   3. the image recipe losing its refusal to pre-create /var/atc.
@@ -33,6 +33,8 @@ fi
 
 GUARD_SRC="$MONO/tools/scripts/atcd-boot-confirm.sh"
 GUARD_COPY="$LAYER/recipes-core/atc/files/atcd-boot-confirm.sh"
+INSTALL_SRC="$MONO/tools/scripts/install-atcd.sh"
+INSTALL_COPY="$LAYER/recipes-core/atc/files/install-atcd.sh"
 CONSTS="$MONO/crates/atc-cmd-bootstrap/src/bootstrap_daemon/consts.rs"
 DEFAULTS="$MONO/crates/atc-config/src/schema_defaults.rs"
 RECIPE="$LAYER/recipes-core/atc/atcd_0.1.0.bb"
@@ -83,11 +85,11 @@ search_optional() {
   search "$@" || true
 }
 
-for f in "$GUARD_COPY" "$RECIPE" "$IMAGE" "$LAYER_CONF" "$PIN_FILE" "$TEGRA_INC"; do
+for f in "$GUARD_COPY" "$INSTALL_COPY" "$RECIPE" "$IMAGE" "$LAYER_CONF" "$PIN_FILE" "$TEGRA_INC"; do
   [ -f "$f" ] || fail "missing required file: $f"
 done
 if [ -n "$MONO" ]; then
-  for f in "$GUARD_SRC" "$CONSTS" "$DEFAULTS"; do
+  for f in "$GUARD_SRC" "$INSTALL_SRC" "$CONSTS" "$DEFAULTS"; do
     [ -f "$f" ] || fail "missing required file in ATC_MONOREPO: $f"
   done
 else
@@ -101,6 +103,15 @@ if [ -n "$MONO" ] && ! cmp -s "$GUARD_SRC" "$GUARD_COPY"; then
   echo "check-meta-atc-recipe: the meta-atc guard copy has drifted." >&2
   diff -u "$GUARD_SRC" "$GUARD_COPY" >&2 || true
   fail "copy $GUARD_SRC to $GUARD_COPY"
+fi
+
+# 1b. The install script copy must be byte-for-byte identical too. It holds the
+#     pinned release keys that verify the atcd the image carries, so a stale
+#     copy can trust a retired key or refuse a current release.
+if [ -n "$MONO" ] && ! cmp -s "$INSTALL_SRC" "$INSTALL_COPY"; then
+  echo "check-meta-atc-recipe: the meta-atc install-atcd.sh copy has drifted." >&2
+  diff -u "$INSTALL_SRC" "$INSTALL_COPY" >&2 || true
+  fail "copy $INSTALL_SRC to $INSTALL_COPY"
 fi
 
 # 2. Every path the recipe hardcodes must match the constant that declares it.

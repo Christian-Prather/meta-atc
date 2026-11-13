@@ -66,6 +66,8 @@ make_fixture() {
     > "$root/tools/scripts/atcd-boot-confirm.sh"
   cp "$root/tools/scripts/atcd-boot-confirm.sh" \
     "$root/meta-atc/recipes-core/atc/files/atcd-boot-confirm.sh"
+  printf '%s\n' '#!/bin/sh' 'echo install' > "$root/tools/scripts/install-atcd.sh"
+  cp "$root/tools/scripts/install-atcd.sh" "$root/meta-atc/recipes-core/atc/files/install-atcd.sh"
 
   cat > "$root/crates/atc-cmd-bootstrap/src/bootstrap_daemon/consts.rs" << 'EOF'
 pub const STORE_ROOT: &str = "/var/atc";
@@ -147,6 +149,12 @@ d1="$tmp/guard-drift"
 make_fixture "$d1"
 printf '%s\n' 'echo drifted' >> "$d1/meta-atc/recipes-core/atc/files/atcd-boot-confirm.sh"
 expect fail "a drifted guard copy is caught" "$d1"
+
+# 1b. The install-atcd.sh copy drifts: it pins the keys that verify atcd.
+d1b="$tmp/install-drift"
+make_fixture "$d1b"
+printf '%s\n' 'echo drifted' >> "$d1b/meta-atc/recipes-core/atc/files/install-atcd.sh"
+expect fail "a drifted install-atcd.sh copy is caught" "$d1b"
 
 # 2. The recipe's libexec path diverges from consts.rs::LIBEXEC_DIR.
 d2="$tmp/libexec-drift"
