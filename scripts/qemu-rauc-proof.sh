@@ -43,8 +43,8 @@
 # Required on the build host: poky (POKY_DIR, default <cache>/poky), the cache config
 # from cache-setup.sh, a running yocto-hashserv, and the RAUC test keys in
 # KEY_DIR (default <cache>/atc-rauc-keys). The atcd recipe downloads a verified
-# atcd with install-atcd.sh, so the build host needs network access to atc.dev. To
-# build in a local atcd instead, set ATCD_BINARY to a static x86-64 binary. check_keys below names each key file.
+# atcd with install-atcd.sh, so the build host needs network access to atc.dev.
+# check_keys below names each key file.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,7 +52,6 @@ LAYER_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 CACHE_DIR="${CACHE_DIR:-/cache}"
 POKY_DIR="${POKY_DIR:-$CACHE_DIR/poky}"
-ATCD_BINARY="${ATCD_BINARY:-}"
 KEY_DIR="${KEY_DIR:-$CACHE_DIR/atc-rauc-keys}"
 
 BUILD_DIR="$CACHE_DIR/build-rauc"
@@ -137,16 +136,6 @@ done
 
 # ── Pure helpers (the self-test drives these) ────────────────────────────────
 
-# The local.conf line that names a prebuilt atcd, or a comment when there is
-# none. With no ATCD_BINARY, the atcd recipe downloads a verified release.
-atcd_conf_line() {
-  if [ -n "$ATCD_BINARY" ]; then
-    printf 'ATCD_BINARY = "%s"' "$ATCD_BINARY"
-  else
-    printf '# atcd: the recipe downloads it with install-atcd.sh (ATCD_TRACK)'
-  fi
-}
-
 # The build directory's bblayers.conf and local.conf. Written on every run, so
 # the build cannot drift from what this script states. $1 is the build dir, $2
 # the newline-separated layer paths from checkout-layers.sh.
@@ -181,7 +170,6 @@ DISTRO_FEATURES:append = " rauc"
 EXTRA_IMAGE_FEATURES = "debug-tweaks"
 TMPDIR = "$CACHE_DIR/tmp-rauc"
 CONF_VERSION = "2"
-$(atcd_conf_line)
 ATC_OS_VERSION = "$OS_VERSION"
 RAUC_KEYRING_FILE = "$KEY_DIR/ca.cert.pem"
 RAUC_KEY_FILE = "$KEY_DIR/signing.key.pem"
@@ -443,7 +431,7 @@ assert_artifacts() {
     "$PREV_VERSION" "$OS_VERSION" || die "two versions did not give two slot images"
 }
 
-# The keys are an input, like ATCD_BINARY. A test CA and two signing pairs
+# The keys are an input. A test CA and two signing pairs
 # signed by it are enough.
 check_keys() {
   local k
@@ -457,9 +445,6 @@ build() {
   step "layers, keys and the build directory"
   layers="$("$SCRIPT_DIR/checkout-layers.sh")"
   check_keys "$KEY_DIR"
-  if [ -n "$ATCD_BINARY" ]; then
-    [ -f "$ATCD_BINARY" ] || die "no atcd at ATCD_BINARY=$ATCD_BINARY"
-  fi
   write_build_conf "$BUILD_DIR" "$layers"
   [ -d "$POKY_DIR" ] || die "no poky checkout at $POKY_DIR"
   set +u
@@ -524,7 +509,7 @@ self_test_envblk() {
 
 self_test_build_conf() {
   local tmp="$1" conf
-  (CACHE_DIR=/c POKY_DIR=/p KEY_DIR=/k ATCD_BINARY=/a LAYER_ROOT=/r/meta-atc \
+  (CACHE_DIR=/c POKY_DIR=/p KEY_DIR=/k LAYER_ROOT=/r/meta-atc \
     write_build_conf "$tmp/build" "/c/layers/meta-rauc")
   conf="$tmp/build/conf"
   grep -qx 'DISTRO_FEATURES:append = " rauc"' "$conf/local.conf" || die "self-test: no rauc feature"
@@ -536,12 +521,6 @@ self_test_build_conf() {
   grep -qxF "  /c/layers/meta-rauc \\" "$conf/bblayers.conf" || die "self-test: no meta-rauc layer"
   grep -qxF "  /r/meta-atc \\" "$conf/bblayers.conf" || die "self-test: no meta-atc layer"
   [ "$(readlink "$conf/site.conf")" = /c/conf/site.conf ] || die "self-test: site.conf link"
-  grep -qx 'ATCD_BINARY = "/a"' "$conf/local.conf" || die "self-test: a set ATCD_BINARY is not in local.conf"
-  (CACHE_DIR=/c POKY_DIR=/p KEY_DIR=/k ATCD_BINARY="" LAYER_ROOT=/r/meta-atc \
-    write_build_conf "$tmp/build" "/c/layers/meta-rauc")
-  if grep -q '^ATCD_BINARY' "$conf/local.conf"; then
-    die "self-test: an empty ATCD_BINARY reached local.conf, so the recipe would not download atcd"
-  fi
 }
 
 # Every command the proof runs in the guest must parse as POSIX shell. A guest

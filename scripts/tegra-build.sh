@@ -32,8 +32,7 @@
 #
 # Required on the build host: poky (POKY_DIR, default <cache>/poky), the cache config
 # from cache-setup.sh, and network access to atc.dev: the atcd recipe downloads
-# a verified atcd with install-atcd.sh. To build in a local atcd instead, set
-# ATCD_BINARY to a static aarch64 binary.
+# a verified atcd with install-atcd.sh.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -41,7 +40,6 @@ LAYER_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 CACHE_DIR="${CACHE_DIR:-/cache}"
 POKY_DIR="${POKY_DIR:-$CACHE_DIR/poky}"
-ATCD_BINARY="${ATCD_BINARY:-}"
 
 MACHINE="jetson-orin-nano-devkit-nvme"
 BUILD_DIR="$CACHE_DIR/build-tegra"
@@ -104,31 +102,7 @@ INIT_MANAGER = "systemd"
 TMPDIR = "$build_dir/tmp"
 CONF_VERSION = "2"
 EOF
-  if [ -n "$ATCD_BINARY" ]; then
-    printf 'ATCD_BINARY_AARCH64 = "%s"\n' "$ATCD_BINARY" >> "$build_dir/conf/local.conf"
-  fi
   ln -sfn "$CACHE_DIR/conf/site.conf" "$build_dir/conf/site.conf"
-}
-
-# The image must carry atcd. The recipe checks the ELF machine; this checks
-# that there is a file to check.
-#
-# It prints the binary's sha256 and what `file` says about it, so the build log
-# names the atcd the image carries. The recipe refuses an ELF of another
-# machine, but only after bitbake has parsed and fetched.
-require_atcd() {
-  if [ -z "$ATCD_BINARY" ]; then
-    echo "atcd: the recipe downloads a verified release with install-atcd.sh"
-    return 0
-  fi
-  [ -f "$ATCD_BINARY" ] || die "no atcd at ATCD_BINARY=$ATCD_BINARY. Copy a
-  static aarch64 atcd to the build host, or set ATCD_BINARY."
-  echo "atcd: $(sha256sum "$ATCD_BINARY")"
-  if command -v file > /dev/null; then
-    echo "atcd: $(file -b "$ATCD_BINARY")"
-  else
-    echo "atcd: 'file' is not installed, so the ELF type is not printed here"
-  fi
 }
 
 # check_image reads the built ext4 with debugfs. Check for it before the
@@ -201,28 +175,12 @@ self_test() {
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
 
-  (POKY_DIR=/p LAYER_ROOT=/r/meta-atc CACHE_DIR=/c MACHINE=jetson-agx-orin-devkit ATCD_BINARY=/a \
+  (POKY_DIR=/p LAYER_ROOT=/r/meta-atc CACHE_DIR=/c MACHINE=jetson-agx-orin-devkit \
     write_build_conf "$tmp/build" "/c/layers/meta-rauc"$'\n'"/c/layers/meta-tegra")
   conf="$tmp/build/conf"
   grep -qx 'MACHINE = "jetson-agx-orin-devkit"' "$conf/local.conf" || die "self-test: MACHINE"
   grep -qx "TMPDIR = \"$tmp/build/tmp\"" "$conf/local.conf" || die "self-test: TMPDIR is shared"
   grep -qx 'INIT_MANAGER = "systemd"' "$conf/local.conf" || die "self-test: no systemd"
-  grep -qx 'ATCD_BINARY_AARCH64 = "/a"' "$conf/local.conf" || die "self-test: no atcd binary"
-  (POKY_DIR=/p LAYER_ROOT=/r/meta-atc CACHE_DIR=/c MACHINE=jetson-agx-orin-devkit ATCD_BINARY="" \
-    write_build_conf "$tmp/build2" "/c/layers/meta-tegra")
-  if grep -q '^ATCD_BINARY' "$tmp/build2/conf/local.conf"; then
-    die "self-test: an empty ATCD_BINARY reached local.conf, so the recipe would not download atcd"
-  fi
-  (ATCD_BINARY="" require_atcd) > /dev/null || die "self-test: require_atcd refused the download case"
-  if (ATCD_BINARY="$tmp/absent" require_atcd) > /dev/null 2>&1; then
-    die "self-test: a missing atcd binary was accepted"
-  fi
-  printf 'not an elf\n' > "$tmp/atcd"
-  out="$(ATCD_BINARY="$tmp/atcd" require_atcd)" || die "self-test: a present atcd binary was refused"
-  grep -qxF "atcd: $(sha256sum "$tmp/atcd")" <<< "$out" ||
-    die "self-test: require_atcd did not print the binary's sha256: $out"
-  [ "$(grep -c '^atcd: ' <<< "$out")" = 2 ] ||
-    die "self-test: require_atcd did not print what file says: $out"
   grep -qxF "  /c/layers/meta-tegra \\" "$conf/bblayers.conf" || die "self-test: no meta-tegra layer"
   grep -qxF "  /r/meta-atc \\" "$conf/bblayers.conf" || die "self-test: no meta-atc layer"
   [ "$(readlink "$conf/site.conf")" = /c/conf/site.conf ] || die "self-test: no site.conf link"
@@ -304,7 +262,6 @@ fi
 # ── The build ────────────────────────────────────────────────────────────────
 
 [ -f "$POKY_DIR/oe-init-build-env" ] || die "no poky at $POKY_DIR; set POKY_DIR"
-require_atcd
 require_debugfs
 layers="$("$SCRIPT_DIR/checkout-layers.sh" --for tegra234)"
 write_build_conf "$BUILD_DIR" "$layers"

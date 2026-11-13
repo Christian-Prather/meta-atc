@@ -201,19 +201,13 @@ if search 'ATC_DEPLOY_SSH_KEY' "$IMAGE" > /dev/null; then
 sshd refuses a key owned by the build user"
 fi
 
-# 3c. No `ATCD_BINARY:<machine>` override. Two shapes were tried there and both
-#     were wrong: an unconditional override silently discards a plain
-#     ATCD_BINARY, and one that defaults back to it forms a real reference cycle
-#     (the override expands to the per-arch name, which expands to the override).
-#     do_install reads ATCD_BINARY_RESOLVED, which no bitbake evaluation can
-#     resolve into a loop. Neither failure is visible without a Yocto build, so
-#     the shape itself is what this pins.
-if search '^ATCD_BINARY:' "$RECIPE" > /dev/null; then
-  fail "the recipe overrides ATCD_BINARY per machine. That shape either drops a \
-plain ATCD_BINARY or forms a reference cycle; resolve into ATCD_BINARY_RESOLVED instead"
-fi
-search '^ATCD_BINARY_RESOLVED' "$RECIPE" > /dev/null ||
-  fail "the recipe lost ATCD_BINARY_RESOLVED; do_install would read an unresolved binary path"
+# 3c. atcd comes from install-atcd.sh in download-only mode. That script checks
+#     the release signature and the binary's sha256. Any other way to fetch it
+#     skips both checks.
+#     The command spans continuation lines, so join them first (see 3d).
+rg -q '^[^#]*ATC_DOWNLOAD_ONLY=.*install-atcd\.sh' \
+  < <(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba' -e '}' "$RECIPE") ||
+  fail "the recipe does not fetch atcd with install-atcd.sh in download-only mode"
 
 # 3d. No backtick inside a bbnote/bbfatal message. Those run in a SHELL function,
 #     so a backtick is command substitution, not quoting: a message reading
@@ -238,13 +232,13 @@ That is command substitution in the build shell. Use single quotes"
   fi
 done
 
-# 3e. The host binary's BYTES must be in do_install's signature. ATCD_BINARY
-#     points outside bitbake's control, so without file-checksums only the path
-#     STRING is hashed: rebuilding atcd to the same path reuses the cached
-#     package and ships the OLD binary while the build reports success.
-search 'do_install\[file-checksums\]' "$RECIPE" > /dev/null ||
-  fail "the recipe does not declare do_install[file-checksums] for ATCD_BINARY; \
-a rebuilt binary at the same path would be served stale from sstate"
+# 3e. The download must run on every build. The track's current release
+#     changes with no change to any variable, so without nostamp bitbake reuses
+#     the cached download and the image ships an OLD atcd while the build
+#     reports success.
+search '^do_compile\[nostamp\] = "1"' "$RECIPE" > /dev/null ||
+  fail "the recipe does not set do_compile[nostamp]; \
+a cached download would ship an old atcd from sstate"
 
 # 3f. No `sudo` group in EXTRA_USERS_PARAMS. That group is a Debian convention;
 #     Yocto's sudo package does not create it, so `useradd -G atc,sudo` fails on
