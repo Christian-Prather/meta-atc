@@ -12,7 +12,6 @@
 # bbappend that differs by backend inherits it too. A third backend adds one
 # value here and one variant per recipe. It edits no existing branch.
 #
-# README.md, "The slot backend seam", has the table.
 ATC_SLOT_BACKEND ??= "grub"
 ATC_SLOT_BACKEND:tegra234 ??= "nvbootctrl"
 OVERRIDES .= ":atc-slot-${ATC_SLOT_BACKEND}"

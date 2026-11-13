@@ -6,7 +6,7 @@ name: test
 #
 # The checks that compare this layer with the atc source do not run here.
 # They need a checkout of that source, and this job has no credential to read
-# one (README, "Verification").
+# one (README, "Test").
 
 on:
   push:
