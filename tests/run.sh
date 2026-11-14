@@ -51,7 +51,7 @@ run "GRUB trial predicate" bash "$ROOT/tests/atc-slot-trial-grub_test.sh" \
 run "trial deadline" bash "$ROOT/tests/atc-os-trial-deadline_test.sh" \
   "$ROOT/recipes-core/atc-os/files/atc-os-trial-deadline"
 run "Tegra flash tools wrapper" bash "$ROOT/tests/tegra-flashtools-wrapper_test.sh" \
-  "$ROOT/dynamic-layers/tegra/recipes-bsp/tegra-binaries/tegra-flashtools-native_%.bbappend"
+  "$ROOT/dynamic-layers/tegra/recipes-bsp/tegra-binaries/tegra-flashtools-native-atc.inc"
 run "nvbootctrl backend" bash "$ROOT/tests/atc-nvbootctrl-backend_test.sh" \
   "$ROOT/recipes-bsp/atc-nvbootctrl/files/atc-nvbootctrl-backend" \
   "$ROOT/recipes-bsp/atc-nvbootctrl/files/atc-slot-trial-nvbootctrl" \

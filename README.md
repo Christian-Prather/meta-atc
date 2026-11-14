@@ -21,12 +21,19 @@ meta-tegra.
 bitbake-layers add-layer /path/to/meta-atc
 ```
 
-The layer needs systemd. Set this in `local.conf`. It changes the init system
-of every image in the build directory:
+The layer needs systemd and its own configuration. Set this in `local.conf`, or
+in a distro conf. It changes the init system of every image in the build
+directory:
 
 ```
 INIT_MANAGER = "systemd"
+require conf/distro/include/atc.inc
 ```
+
+`atc.inc` sets the `atc` distro feature, which turns on the layer's changes to
+recipes of other layers (GRUB, the kernel, RAUC, the meta-tegra BSP), and the
+Jetson flash layout. Without it, adding the layer changes no other recipe, and
+the atc images are skipped.
 
 ## Set the machine
 

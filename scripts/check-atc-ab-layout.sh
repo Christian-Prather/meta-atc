@@ -36,22 +36,22 @@ L="$(cd "${META_ATC_ROOT:-$SCRIPT_DIR/..}" && pwd)"
 WKS="$L/wic/atc-ab.wks.in"
 GRUB_CFG="$L/recipes-bsp/atc-grub-env/files/atc-ab-grub.cfg"
 RECIPE="$L/recipes-bsp/atc-grub-env/atc-grub-env_1.0.bb"
-GRUB_APPEND="$L/recipes-bsp/grub/grub-efi_%.bbappend"
+GRUB_APPEND="$L/recipes-bsp/grub/grub-efi-atc.inc"
 SYSTEM_CONF="$L/recipes-core/rauc/files/system.conf"
 TEGRA_CONF="$L/recipes-core/rauc/files/system-nvbootctrl.conf"
-RAUC_CONF_APPEND="$L/recipes-core/rauc/rauc-conf.bbappend"
+RAUC_CONF_APPEND="$L/recipes-core/rauc/rauc-conf-atc.inc"
 OS_RECIPE="$L/recipes-core/atc-os/atc-os_1.0.bb"
 SEAM="$L/classes/atc-slot-backend.bbclass"
 POLICY="$L/recipes-core/rauc/files/atc-rauc.conf"
-RAUC_APPEND="$L/recipes-core/rauc/rauc_%.bbappend"
+RAUC_APPEND="$L/recipes-core/rauc/rauc-atc.inc"
 BUNDLE="$L/recipes-core/bundles/atc-bundle.bb"
 RUNTIME="$L/recipes-core/images/atc-ab-runtime.inc"
 OS_DIR="$L/recipes-core/atc-os/files"
-KERNEL_APPEND="$L/recipes-kernel/linux/linux-yocto_%.bbappend"
+KERNEL_APPEND="$L/recipes-kernel/linux/linux-yocto-atc.inc"
 WATCHDOG_CFG="$L/recipes-kernel/linux/files/atc-watchdog.cfg"
 IMAGE="$L/recipes-core/images/atc-image-ab.bb"
 SLOT_IMAGE="$L/recipes-core/images/atc-image-slot.bb"
-LAYER_CONF="$L/conf/layer.conf"
+ATC_CONF="$L/conf/distro/include/atc.inc"
 HOOK="$L/recipes-core/bundles/files/atc-bundle-hook"
 
 # The seven variables grub.cfg reads, and their fail-closed defaults. The
@@ -99,7 +99,7 @@ for f in "$WKS" "$GRUB_CFG" "$RECIPE" "$GRUB_APPEND" "$SYSTEM_CONF" "$TEGRA_CONF
   "$RAUC_APPEND" "$BUNDLE" "$RUNTIME" "$IMAGE" "$SLOT_IMAGE" \
   "$OS_DIR/atc-os-trial-deadline" "$OS_DIR/atc-os-trial-deadline.timer" \
   "$OS_DIR/atc-os-reboot.path" "$OS_DIR/atc-os-reboot.service" \
-  "$OS_DIR/10-atc-store.conf" "$KERNEL_APPEND" "$WATCHDOG_CFG" "$LAYER_CONF" "$HOOK"; do
+  "$OS_DIR/10-atc-store.conf" "$KERNEL_APPEND" "$WATCHDOG_CFG" "$ATC_CONF" "$HOOK"; do
   if [ ! -f "$f" ]; then
     echo "FAIL: missing $f" >&2
     exit 1
@@ -610,9 +610,9 @@ nv() { SYSTEM_CONF="$TEGRA_CONF" conf_value "$@"; }
 grep -qF 'RAUC_BUNDLE_COMPATIBLE:atc-slot-nvbootctrl = "atc-${MACHINE}"' "$BUNDLE" ||
   fail "the bundle's nvbootctrl compatible is not atc-\${MACHINE}; RAUC refuses every bundle"
 grep -qF 'sed -i '"'"'s/@MACHINE@/${MACHINE}/'"'"'' "$RAUC_CONF_APPEND" ||
-  fail "rauc-conf.bbappend does not substitute @MACHINE@ into system-nvbootctrl.conf"
+  fail "rauc-conf-atc.inc does not substitute @MACHINE@ into system-nvbootctrl.conf"
 grep -qx 'ATC_RAUC_SYSTEM_CONF:atc-slot-nvbootctrl = "system-nvbootctrl.conf"' "$RAUC_CONF_APPEND" ||
-  fail "rauc-conf.bbappend does not install system-nvbootctrl.conf on atc-slot-nvbootctrl"
+  fail "rauc-conf-atc.inc does not install system-nvbootctrl.conf on atc-slot-nvbootctrl"
 if grep -qE '^grubenv=' "$TEGRA_CONF"; then
   fail "system-nvbootctrl.conf keeps the GRUB key grubenv"
 fi
@@ -621,14 +621,14 @@ fi
 # system-nvbootctrl.conf names APP_b, which exists only in the redundant layout.
 # The layout is machine-wide BSP config, so the UEFI firmware and the capsule
 # read the same value as the image. It is redundant unless a build opts out.
-grep -qx 'ATC_TEGRA_REDUNDANT ??= "1"' "$LAYER_CONF" ||
-  fail "layer.conf does not default ATC_TEGRA_REDUNDANT to 1, so a Tegra build" \
+grep -qx 'ATC_TEGRA_REDUNDANT ??= "1"' "$ATC_CONF" ||
+  fail "atc.inc does not default ATC_TEGRA_REDUNDANT to 1, so a Tegra build" \
     "has no APP_b for system-nvbootctrl.conf to name"
-grep -qx 'USE_REDUNDANT_FLASH_LAYOUT_DEFAULT:tegra234 = "${ATC_TEGRA_REDUNDANT}"' "$LAYER_CONF" ||
-  fail "layer.conf does not set USE_REDUNDANT_FLASH_LAYOUT_DEFAULT on tegra234;" \
+grep -qx 'USE_REDUNDANT_FLASH_LAYOUT_DEFAULT:tegra234 = "${ATC_TEGRA_REDUNDANT}"' "$ATC_CONF" ||
+  fail "atc.inc does not set USE_REDUNDANT_FLASH_LAYOUT_DEFAULT on tegra234;" \
     "an image-level value builds a non-redundant capsule"
-grep -qE '^TEGRA_BOOTCONTROL_OVERLAYS:append:tegra234 = .*L4TConfiguration-AtcRootfsRetryCountMax\.dtbo' "$LAYER_CONF" ||
-  fail "layer.conf does not add the RootfsRetryCountMax overlay, so a trial gets three boots"
+grep -qE '^TEGRA_BOOTCONTROL_OVERLAYS:append:tegra234 = .*L4TConfiguration-AtcRootfsRetryCountMax\.dtbo' "$ATC_CONF" ||
+  fail "atc.inc does not add the RootfsRetryCountMax overlay, so a trial gets three boots"
 # The bundle carries the capsule under the name the hook stages.
 grep -qx 'RAUC_BUNDLE_EXTRA_FILES:append:atc-slot-nvbootctrl = " tegra-bl.cap"' "$BUNDLE" ||
   fail "the bundle does not carry tegra-bl.cap on atc-slot-nvbootctrl, so firmware and" \

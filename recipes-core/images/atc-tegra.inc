@@ -14,7 +14,8 @@
 # The factory artifact is NVIDIA's flash package, not a disk image. tegraflash
 # builds the ext4 rootfs it wraps. The flash layout is NVIDIA's redundant one,
 # with two rootfs partitions, APP and APP_b. That choice is machine-wide, so it
-# is in conf/layer.conf, not here: the UEFI firmware and the capsule read it too.
+# is in conf/distro/include/atc.inc, not here: the UEFI firmware and the
+# capsule read it too.
 IMAGE_FSTYPES:tegra234 = "tegraflash"
 
 # A tar archive, the meta-tegra default, named here so the artifact name is a

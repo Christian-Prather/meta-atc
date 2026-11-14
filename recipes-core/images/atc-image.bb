@@ -25,7 +25,11 @@ IMAGE_INSTALL += " \
 #
 # The distro conf normally sets this. Without it the image is skipped with the
 # reason. A bb.fatal here would stop the parse of every recipe in the build.
-REQUIRED_DISTRO_FEATURES = "systemd"
+#
+# `atc` turns on this layer's changes to other layers' recipes
+# (conf/distro/include/atc.inc). An image built without them would boot without
+# the UDA store or the A/B fixes.
+REQUIRED_DISTRO_FEATURES = "systemd atc"
 
 # The deploy account the controller logs in as. It must be in the `atc` group,
 # which the atcd service user owns: `atcd attach` execs the store-managed binary
