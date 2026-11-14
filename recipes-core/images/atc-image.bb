@@ -4,7 +4,7 @@ deploy user in the atc group. `atc bootstrap atcd install` reaches this image \
 over SSH, renders the systemd unit, and seeds the store-managed atcd."
 LICENSE = "MIT"
 
-inherit core-image extrausers
+inherit core-image extrausers features_check
 
 # The Tegra image settings. Each line in the file carries a Tegra override, so a
 # qemu build reads nothing from it.
@@ -23,17 +23,9 @@ IMAGE_INSTALL += " \
 # atc requires systemd: the daemon runs as a systemd service and the boot-confirm
 # guard is an ExecStartPre. A sysvinit image cannot host it.
 #
-# The distro conf normally sets this. It is asserted here so a sysvinit distro
-# fails at parse time with a reason, rather than producing an image that boots
-# and then cannot run atcd. Keyed on DISTRO_FEATURES, which is what actually
-# decides whether systemd is available to install.
-python __anonymous() {
-    features = (d.getVar('DISTRO_FEATURES') or '').split()
-    if 'systemd' not in features:
-        bb.fatal("atc-image needs 'systemd' in DISTRO_FEATURES. atcd runs as a "
-                 "systemd unit whose ExecStartPre is the A/B boot-confirm guard, "
-                 "so a sysvinit image cannot host it.")
-}
+# The distro conf normally sets this. Without it the image is skipped with the
+# reason. A bb.fatal here would stop the parse of every recipe in the build.
+REQUIRED_DISTRO_FEATURES = "systemd"
 
 # The deploy account the controller logs in as. It must be in the `atc` group,
 # which the atcd service user owns: `atcd attach` execs the store-managed binary
