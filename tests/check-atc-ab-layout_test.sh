@@ -30,16 +30,16 @@ trap 'rm -rf "$tmp"' EXIT
 WKS_REL="wic/atc-ab.wks.in"
 CFG_REL="recipes-bsp/atc-grub-env/files/atc-ab-grub.cfg"
 RECIPE_REL="recipes-bsp/atc-grub-env/atc-grub-env_1.0.bb"
-GRUB_APPEND_REL="recipes-bsp/grub/grub-efi_%.bbappend"
+GRUB_APPEND_REL="recipes-bsp/grub/grub-efi-atc.inc"
 CONF_REL="recipes-core/rauc/files/system.conf"
 TEGRA_CONF_REL="recipes-core/rauc/files/system-nvbootctrl.conf"
 OS_RECIPE_REL="recipes-core/atc-os/atc-os_1.0.bb"
 SEAM_REL="classes/atc-slot-backend.bbclass"
 PRE_INSTALL_REL="recipes-core/atc-os/files/atc-os-pre-install"
 SLOT_TRIAL_REL="recipes-core/atc-os/files/atc-slot-trial-grub"
-RAUC_CONF_APPEND_REL="recipes-core/rauc/rauc-conf.bbappend"
+RAUC_CONF_APPEND_REL="recipes-core/rauc/rauc-conf-atc.inc"
 POLICY_REL="recipes-core/rauc/files/atc-rauc.conf"
-RAUC_APPEND_REL="recipes-core/rauc/rauc_%.bbappend"
+RAUC_APPEND_REL="recipes-core/rauc/rauc-atc.inc"
 BUNDLE_REL="recipes-core/bundles/atc-bundle.bb"
 RUNTIME_REL="recipes-core/images/atc-ab-runtime.inc"
 IMAGE_REL="recipes-core/images/atc-image-ab.bb"
@@ -50,9 +50,9 @@ PATH_REL="recipes-core/atc-os/files/atc-os-reboot.path"
 REBOOT_REL="recipes-core/atc-os/files/atc-os-reboot.service"
 WATCHDOG_REL="recipes-core/atc-os/files/10-atc-watchdog.conf"
 STORE_DROPIN_REL="recipes-core/atc-os/files/10-atc-store.conf"
-KERNEL_REL="recipes-kernel/linux/linux-yocto_%.bbappend"
+KERNEL_REL="recipes-kernel/linux/linux-yocto-atc.inc"
 WDT_CFG_REL="recipes-kernel/linux/files/atc-watchdog.cfg"
-LAYER_CONF_REL="conf/layer.conf"
+ATC_CONF_REL="conf/distro/include/atc.inc"
 HOOK_REL="recipes-core/bundles/files/atc-bundle-hook"
 
 ALL_REL=("$WKS_REL" "$CFG_REL" "$RECIPE_REL" "$GRUB_APPEND_REL" "$CONF_REL"
@@ -60,7 +60,7 @@ ALL_REL=("$WKS_REL" "$CFG_REL" "$RECIPE_REL" "$GRUB_APPEND_REL" "$CONF_REL"
   "$SLOT_REL" "$DEADLINE_REL" "$TIMER_REL" "$PATH_REL" "$REBOOT_REL"
   "$WATCHDOG_REL" "$KERNEL_REL" "$WDT_CFG_REL" "$TEGRA_CONF_REL"
   "$RAUC_CONF_APPEND_REL" "$OS_RECIPE_REL" "$SEAM_REL" "$PRE_INSTALL_REL"
-  "$SLOT_TRIAL_REL" "$LAYER_CONF_REL" "$HOOK_REL" "$STORE_DROPIN_REL")
+  "$SLOT_TRIAL_REL" "$ATC_CONF_REL" "$HOOK_REL" "$STORE_DROPIN_REL")
 
 make_fixture() {
   local root="$1" rel
@@ -286,7 +286,7 @@ mutate "a wks for every backend is caught" "$IMAGE_REL" 's/^WKS_FILE:atc-slot-gr
 mutate "a bundle off the seam is caught" "$BUNDLE_REL" 's/^inherit bundle atc-slot-backend$/inherit bundle/' "atc-bundle.bb does not inherit"
 mutate "a bundle with one compatible for every Orin is caught" "$BUNDLE_REL" \
   's/^RAUC_BUNDLE_COMPATIBLE:atc-slot-nvbootctrl = .*/RAUC_BUNDLE_COMPATIBLE:atc-slot-nvbootctrl = "atc-tegra234"/' "nvbootctrl compatible"
-mutate "a rauc-conf off the seam is caught" "$RAUC_CONF_APPEND_REL" '/^inherit atc-slot-backend$/d' "rauc-conf.bbappend does not inherit"
+mutate "a rauc-conf off the seam is caught" "$RAUC_CONF_APPEND_REL" '/^inherit atc-slot-backend$/d' "rauc-conf-atc.inc does not inherit"
 mutate "a rauc-conf that never installs the nvbootctrl conf is caught" "$RAUC_CONF_APPEND_REL" \
   '/^ATC_RAUC_SYSTEM_CONF:atc-slot-nvbootctrl/d' "does not install system-nvbootctrl.conf"
 mutate "a compatible that is never substituted is caught" "$RAUC_CONF_APPEND_REL" \
@@ -343,11 +343,11 @@ mutate "a bundle that accepts the single-APP layout is caught" "$BUNDLE_REL" \
   "s/d.getVar('USE_REDUNDANT_FLASH_LAYOUT') != '1'/False/" "atc-bundle.bb does not refuse the single-APP"
 mutate "a runtime profile without the capsule tool is caught" "$RUNTIME_REL" \
   's/ atc-tegra-capsule//' "does not install atc-tegra-capsule"
-mutate "a non-redundant default is caught" "$LAYER_CONF_REL" \
+mutate "a non-redundant default is caught" "$ATC_CONF_REL" \
   's/^ATC_TEGRA_REDUNDANT ??= "1"$/ATC_TEGRA_REDUNDANT ??= "0"/' "ATC_TEGRA_REDUNDANT to 1"
-mutate "an image-level redundant layout is caught" "$LAYER_CONF_REL" \
+mutate "an image-level redundant layout is caught" "$ATC_CONF_REL" \
   '/^USE_REDUNDANT_FLASH_LAYOUT_DEFAULT:tegra234 /d' "USE_REDUNDANT_FLASH_LAYOUT_DEFAULT on tegra234"
-mutate "a missing retry-count overlay is caught" "$LAYER_CONF_REL" \
+mutate "a missing retry-count overlay is caught" "$ATC_CONF_REL" \
   '/^TEGRA_BOOTCONTROL_OVERLAYS:append:tegra234 /d' "RootfsRetryCountMax overlay"
 mutate "a bundle without the capsule is caught" "$BUNDLE_REL" \
   '/^RAUC_BUNDLE_EXTRA_FILES:append:atc-slot-nvbootctrl /d' "does not carry tegra-bl.cap"
