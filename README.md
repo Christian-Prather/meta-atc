@@ -131,6 +131,13 @@ tests/run.sh
 
 This runs every check that needs no Yocto build. CI runs the same command.
 
+## Contributing
+
+Send patches as pull requests to
+<https://github.com/Christian-Prather/meta-atc>. Run `tests/run.sh` first.
+
+Maintainer: Christian Prather <christian@agencytool.company>
+
 ## License
 
 MIT. See [LICENSE](LICENSE). The atcd binary that the layer downloads is
