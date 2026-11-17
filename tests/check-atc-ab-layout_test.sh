@@ -140,6 +140,18 @@ mutate "a root found by filesystem label is caught" "$CFG_REL" \
 mutate "a bootname B on slot A's part is caught" "$CFG_REL" \
   '/^if \[ "\$atc_boot" = "B" \]; then$/{n;n;s/atc_slot_b_part/atc_slot_a_part/}'
 mutate "a GRUB without regexp is caught" "$GRUB_APPEND_REL" 's/ reboot regexp"/ reboot"/'
+mutate "a GRUB change on every machine is caught" "$GRUB_APPEND_REL" \
+  's/^GRUB_BUILDIN:append:qemux86-64 = /GRUB_BUILDIN:append = /' \
+  "grub-efi-atc.inc sets a variable without the :qemux86-64 override"
+mutate "a kernel files path on every machine is caught" "$KERNEL_REL" \
+  's/^FILESEXTRAPATHS:prepend:qemux86-64 := /FILESEXTRAPATHS:prepend := /' \
+  "linux-yocto-atc.inc sets a variable without the :qemux86-64 override"
+mutate "an unpinned RAUC is caught" "$ATC_CONF_REL" '/^PREFERRED_VERSION_rauc = /d' \
+  "PREFERRED_VERSION_rauc to ATC_RAUC_VERSION"
+mutate "an unpinned rauc-native is caught" "$ATC_CONF_REL" '/^PREFERRED_VERSION_rauc-native = /d' \
+  "PREFERRED_VERSION_rauc-native to"
+mutate "a RAUC pin to git is caught" "$ATC_CONF_REL" 's/^ATC_RAUC_VERSION = .*/ATC_RAUC_VERSION = "git"/' \
+  "to a release version"
 mutate "a grub.cfg label the wks does not write is caught" "$CFG_REL" \
   's/^set atc_slot_b_label=atcrootb$/set atc_slot_b_label=atcrootc/'
 
