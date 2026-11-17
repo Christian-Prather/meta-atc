@@ -377,6 +377,7 @@ readelf reports '${actual_machine}', expected '${ATCD_EXPECTED_ELF_MACHINE}'."
     install -d ${D}${systemd_system_unitdir}
     install -m 0644 ${WORKDIR}/atcd.service ${WORKDIR}/atcd-store-seed.service \
         ${D}${systemd_system_unitdir}/
+    sed -i 's#@LIBEXECDIR@#${libexecdir}#' ${D}${systemd_system_unitdir}/atcd-store-seed.service
     install -d ${D}${libexecdir}/atcd
     install -m 0755 ${WORKDIR}/atcd-store-seed ${D}${libexecdir}/atcd/
     install -d ${D}${nonarch_libdir}/tmpfiles.d

@@ -2,10 +2,11 @@
 #
 # The store is on the data partition, which the image does not write. So the
 # first boot on a fresh data partition copies /usr/bin/atcd into the store,
-# the same as `atcd install-self` does at a bootstrap. After that the store
-# holds atcd, the condition below is false, and this unit does nothing. atcd
-# updates itself inside the store, so a later image's /usr/bin/atcd does not
-# replace the store's copy.
+# the same as `atcd install-self` does at a bootstrap. The script writes the
+# done marker last. After that the condition below is false, and this unit
+# does nothing. A seed that stops before the end runs again on the next boot.
+# atcd updates itself inside the store, so a later image's /usr/bin/atcd does
+# not replace the store's copy, and a store that a bootstrap filled is kept.
 #
 # It edits no account. The atc and atc-hooks users come from the atcd package,
 # and systemd-tmpfiles sets the owner and mode of /var/atc (atcd.conf).
@@ -13,9 +14,10 @@
 Description=Seed the atcd store with the image's atcd
 RequiresMountsFor=/var/atc
 After=systemd-tmpfiles-setup.service
-ConditionPathExists=!/var/atc/channel/agency/atcd/delivery/current/atcd/atcd
+ConditionPathExists=!/var/atc/.atcd-seed-done
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/libexec/atcd/atcd-store-seed
+# do_install replaces @LIBEXECDIR@ with the libexecdir it installs the script to.
+ExecStart=@LIBEXECDIR@/atcd/atcd-store-seed

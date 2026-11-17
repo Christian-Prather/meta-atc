@@ -174,7 +174,21 @@ mutate "a unit that does not require the seed is caught" "$ATCD_UNIT_REL" '/^Req
 mutate "a unit ordered before the seed is caught" "$ATCD_UNIT_REL" 's/^After=.*/After=network.target/' \
   "before atcd-store-seed"
 mutate "a seed that runs on every boot is caught" "$SEED_UNIT_REL" '/^ConditionPathExists=/d' \
-  "already holds atcd"
+  "does not key on the done marker"
+mutate "a seed keyed on the atcd link is caught" "$SEED_UNIT_REL" \
+  's#^ConditionPathExists=.*#ConditionPathExists=!/var/atc/channel/agency/atcd/delivery/current/atcd/atcd#' \
+  "does not key on the done marker"
+mutate "a done marker the unit does not read is caught" "$SEED_REL" \
+  's#^DONE="$STORE/.atcd-seed-done"#DONE="$STORE/.seeded"#' "another done marker"
+mutate "a done marker before the grants is caught" "$SEED_REL" \
+  '/^if \[ -e "$STARTED" \]; then$/i touch "$DONE"' "as its last step"
+mutate "a seed that never marks its start is caught" "$SEED_REL" '/^  touch "$STARTED"$/d' "cannot be resumed"
+mutate "a seed that does not resume the grants is caught" "$SEED_REL" \
+  's/^if \[ -e "$STARTED" \]; then$/if false; then/' "does not resume the grants"
+mutate "a seed unit at a fixed libexec path is caught" "$SEED_UNIT_REL" \
+  's#^ExecStart=@LIBEXECDIR@/#ExecStart=/usr/libexec/#' "does not run @LIBEXECDIR@"
+mutate "a seed unit the recipe never fills in is caught" "$ATCD_RECIPE_REL" \
+  '/@LIBEXECDIR@/d' "does not write libexecdir"
 mutate "a seed without the store mount is caught" "$SEED_UNIT_REL" '/^RequiresMountsFor=/d' "mount point"
 mutate "a seed of another link is caught" "$SEED_REL" 's#/delivery/current/#/delivery/next/#' "another link"
 mutate "a 0700 store root is caught" "$TMPFILES_REL" 's#^d /var/atc 0750#d /var/atc 0700#' "0750"
