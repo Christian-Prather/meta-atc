@@ -381,8 +381,27 @@ grep -qx 'Requires=atcd-store-seed.service' "$ATCD_FILES/atcd.service" ||
   fail "atcd.service does not require atcd-store-seed.service, so a fresh store never starts"
 grep -qE '^After=.*\batcd-store-seed\.service\b' "$ATCD_FILES/atcd.service" ||
   fail "atcd.service can start before atcd-store-seed.service fills the store"
-grep -qx "ConditionPathExists=!$store_link" "$ATCD_FILES/atcd-store-seed.service" ||
-  fail "atcd-store-seed.service does not skip a store that already holds atcd"
+# The seed is complete only when its last step ran. The unit keys on the done
+# marker, which the script writes after its grants, so a seed that a power cut
+# stops runs again. A key on the atcd link would skip that half-seeded store.
+grep -qx 'ConditionPathExists=!/var/atc/.atcd-seed-done' "$ATCD_FILES/atcd-store-seed.service" ||
+  fail "atcd-store-seed.service does not key on the done marker, so an incomplete seed is never repeated"
+grep -qx 'DONE="$STORE/.atcd-seed-done"' "$ATCD_FILES/atcd-store-seed" ||
+  fail "atcd-store-seed writes another done marker than the unit reads"
+last_step="$(grep -vE '^[[:space:]]*(#|$)' "$ATCD_FILES/atcd-store-seed" | grep -vx 'sync' | tail -n 1)"
+[ "$last_step" = 'touch "$DONE"' ] && [ "$(grep -c '"$DONE"' "$ATCD_FILES/atcd-store-seed")" = 1 ] ||
+  fail "atcd-store-seed does not write the done marker as its last step, so an incomplete seed is marked done"
+grep -qx '  touch "$STARTED"' "$ATCD_FILES/atcd-store-seed" ||
+  fail "atcd-store-seed does not mark a seed it starts, so an incomplete seed cannot be resumed"
+grep -qx 'if \[ -e "$STARTED" \]; then' "$ATCD_FILES/atcd-store-seed" ||
+  fail "atcd-store-seed does not resume the grants of an incomplete seed"
+# The unit names the script by the path the recipe installs it to.
+grep -qx 'ExecStart=@LIBEXECDIR@/atcd/atcd-store-seed' "$ATCD_FILES/atcd-store-seed.service" ||
+  fail "atcd-store-seed.service does not run @LIBEXECDIR@/atcd/atcd-store-seed"
+grep -qxF "    sed -i 's#@LIBEXECDIR@#\${libexecdir}#' \${D}\${systemd_system_unitdir}/atcd-store-seed.service" "$ATCD_RECIPE" ||
+  fail "the atcd recipe does not write libexecdir into atcd-store-seed.service"
+grep -qxF '    install -m 0755 ${WORKDIR}/atcd-store-seed ${D}${libexecdir}/atcd/' "$ATCD_RECIPE" ||
+  fail "the atcd recipe does not install atcd-store-seed in libexecdir/atcd"
 grep -qx 'RequiresMountsFor=/var/atc' "$ATCD_FILES/atcd-store-seed.service" ||
   fail "atcd-store-seed.service can seed the slot's empty mount point"
 grep -qx "LINK=\"\$STORE/${store_link#/var/atc/}\"" "$ATCD_FILES/atcd-store-seed" ||
