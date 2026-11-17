@@ -6,7 +6,7 @@
 # device. Among others:
 #   2. a recipe path that differs from the on-device paths atcd uses (the
 #      contract values below);
-#   3. the image recipe losing its refusal to pre-create /var/atc.
+#   3. the image recipe losing its refusal to carry /var/atc in the rootfs.
 #
 # It does NOT prove anything about a built rootfs. That check needs a Yocto
 # builder.
@@ -79,7 +79,7 @@ recipe_libexec="$(search_optional '^ATCD_LIBEXEC = ' "$RECIPE" | sed -n 's/.*"\(
 
 # The recipe writes the binary to ${bindir}/atcd. bindir is /usr/bin in a stock
 # Yocto image, while atcd's default remote_path is /usr/local/bin/atcd. They
-# differ ON PURPOSE: remote_path is a convenience symlink `atc bootstrap` makes,
+# differ ON PURPOSE: remote_path is a convenience symlink into the store that the recipe makes,
 # not a second copy. A recipe "corrected" onto remote_path would put two real
 # atcd binaries on the device.
 recipe_remote_path="$(search_optional '^ATCD_REMOTE_PATH = ' "$RECIPE" |
@@ -87,18 +87,18 @@ recipe_remote_path="$(search_optional '^ATCD_REMOTE_PATH = ' "$RECIPE" |
 [ -n "$recipe_remote_path" ] ||
   fail "the recipe has no ATCD_REMOTE_PATH; it would install the binary nowhere"
 if [ "$recipe_remote_path" = "$WANT_REMOTE_PATH" ]; then
-  fail "the recipe installs to '$recipe_remote_path', the same path bootstrap \
+  fail "the recipe installs to '$recipe_remote_path', the same path the recipe \
 SYMLINKS. That makes a second real atcd on the device; install to \${bindir}/atcd"
 fi
 
-# 3. The image must refuse a pre-created store root, and must not create one.
+# 3. The rootfs must not carry the store root, which is a mount point.
 search 'atc_refuse_prebuilt_store_root' "$IMAGE" > /dev/null ||
-  fail "atc-image.bb lost atc_refuse_prebuilt_store_root; /var/atc could be baked in"
+  fail "atc-image.bb lost atc_refuse_prebuilt_store_root; the rootfs could carry /var/atc"
 if search "install -d .*${store_root}\b" "$IMAGE" > /dev/null; then
-  fail "atc-image.bb creates $store_root; atcd install-self must create it on the device"
+  fail "atc-image.bb creates $store_root; it is the data partition's mount point"
 fi
 if search "install -d .*${store_root}\b" "$RECIPE" > /dev/null; then
-  fail "atcd recipe creates $store_root; atcd install-self must create it on the device"
+  fail "atcd recipe creates $store_root; it is the data partition's mount point"
 fi
 
 # 3b. A baked-in SSH key must be chowned to the deploy user. The step runs

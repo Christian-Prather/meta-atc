@@ -1,0 +1,21 @@
+# Put the image's atcd into an empty store, once per store.
+#
+# The store is on the data partition, which the image does not write. So the
+# first boot on a fresh data partition copies /usr/bin/atcd into the store,
+# the same as `atcd install-self` does at a bootstrap. After that the store
+# holds atcd, the condition below is false, and this unit does nothing. atcd
+# updates itself inside the store, so a later image's /usr/bin/atcd does not
+# replace the store's copy.
+#
+# It edits no account. The atc and atc-hooks users come from the atcd package,
+# and systemd-tmpfiles sets the owner and mode of /var/atc (atcd.conf).
+[Unit]
+Description=Seed the atcd store with the image's atcd
+RequiresMountsFor=/var/atc
+After=systemd-tmpfiles-setup.service
+ConditionPathExists=!/var/atc/channel/agency/atcd/delivery/current/atcd/atcd
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/atcd/atcd-store-seed

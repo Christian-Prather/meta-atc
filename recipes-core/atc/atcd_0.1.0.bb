@@ -1,10 +1,11 @@
-SUMMARY = "atcd and its boot-confirm guard"
-DESCRIPTION = "Installs the atcd A/B boot-confirm guard and atcd, the current \
-release of ATCD_TRACK, downloaded and verified by install-atcd.sh. The recipe \
-does NOT install a systemd unit: the unit interpolates the store root, socket \
-path, service user and telemetry endpoint of the specific device, so a copy \
-baked into an image drifts from render_systemd_unit. First-boot \
-`atc bootstrap atcd install` renders it."
+SUMMARY = "atcd, its service, its users and its boot-confirm guard"
+DESCRIPTION = "Installs atcd, the current release of ATCD_TRACK, downloaded \
+and verified by install-atcd.sh. Also the end state of a device-side \
+`atcd install`: the atc and atc-hooks users with fixed ids, atcd.service, \
+the store root's owner and mode, the hook user's sudoers rule, subordinate \
+ids, linger and stop timeout, and the boot-confirm guard. No step at run \
+time edits an account. The first boot on an empty store copies this atcd \
+into the store, and atcd updates itself there."
 HOMEPAGE = "https://github.com/Christian-Prather/meta-atc"
 # The layer's files are MIT. atcd, the guard and install-atcd.sh come from the
 # atc source, which is MIT OR Apache-2.0.
@@ -22,7 +23,36 @@ INHIBIT_SYSROOT_STRIP = "1"
 
 # The guard and install-atcd.sh are copies of atc's own scripts. The atc
 # maintainers keep them byte-for-byte equal to the originals.
-SRC_URI = "file://atcd-boot-confirm.sh file://install-atcd.sh"
+SRC_URI = "file://atcd-boot-confirm.sh file://install-atcd.sh \
+    file://atcd.service file://atcd-store-seed.service file://atcd-store-seed \
+    file://atcd.conf file://atcd-hook-user-stop-timeout.conf \
+    file://atc-shell.sudoers"
+
+inherit useradd systemd
+
+# Users atc and atc-hooks with FIXED ids, in every image.
+#
+# The store on /var/atc survives a slot switch, and its files carry numeric
+# owners. Two slots that allocated the ids in a different order would hand the
+# store to the wrong user after an update. The drop-in for the hook user's
+# manager names its uid, so that uid is fixed too.
+ATC_GID ?= "2000"
+ATC_UID ?= "2000"
+ATC_HOOKS_UID ?= "2001"
+# The first subordinate id of atc-hooks: the first block `atc bootstrap`
+# tries.
+ATC_HOOKS_SUBID_BASE ?= "1879048192"
+
+USERADD_PACKAGES = "${PN}"
+GROUPADD_PARAM:${PN} = "--system -g ${ATC_GID} atc"
+# One user per line, so scripts/check-atc-ab-layout.sh can read each.
+USERADD_PARAM:${PN} = "\
+    --system -u ${ATC_UID} -g atc --home-dir /var/atc --no-create-home --shell /usr/sbin/nologin atc; \
+    --system -u ${ATC_HOOKS_UID} -g atc -G atc --home-dir /var/lib/atc-hooks --no-create-home --shell /usr/sbin/nologin atc-hooks \
+    "
+
+# Only atcd.service is enabled. It requires atcd-store-seed.service.
+SYSTEMD_SERVICE:${PN} = "atcd.service"
 
 ATCD_TRACK ?= "stable"
 
@@ -41,10 +71,13 @@ ATCD_EXPECTED_ELF_MACHINE:tegra234 = "AArch64"
 # Paths the running system uses. They must match what atcd expects:
 #   libexec directory  /usr/local/libexec
 #   guard              /usr/local/libexec/atcd-boot-confirm.sh
-#   remote_path        /usr/local/bin/atcd, a symlink that bootstrap makes
+#   remote_path        /usr/local/bin/atcd, a symlink into the store
+#   store link         the store's current atcd, which atcd.service runs
 ATCD_LIBEXEC = "/usr/local/libexec"
 ATCD_GUARD_PATH = "${ATCD_LIBEXEC}/atcd-boot-confirm.sh"
 ATCD_REMOTE_PATH = "${bindir}/atcd"
+ATCD_LINK_PATH = "/usr/local/bin/atcd"
+ATCD_STORE_LINK = "/var/atc/channel/agency/atcd/delivery/current/atcd/atcd"
 
 S = "${WORKDIR}"
 
@@ -119,12 +152,56 @@ readelf reports '${actual_machine}', expected '${ATCD_EXPECTED_ELF_MACHINE}'."
 
     install -d ${D}${bindir}
     install -m 0755 "${B}/atcd" ${D}${ATCD_REMOTE_PATH}
+
+    # The link atc runs over ssh. It points into the store, which the data
+    # partition holds, so it dangles until atcd-store-seed fills the store.
+    install -d ${D}$(dirname ${ATCD_LINK_PATH})
+    ln -sfn ${ATCD_STORE_LINK} ${D}${ATCD_LINK_PATH}
+
+    install -d ${D}${systemd_system_unitdir}
+    install -m 0644 ${WORKDIR}/atcd.service ${WORKDIR}/atcd-store-seed.service \
+        ${D}${systemd_system_unitdir}/
+    install -d ${D}${libexecdir}/atcd
+    install -m 0755 ${WORKDIR}/atcd-store-seed ${D}${libexecdir}/atcd/
+    install -d ${D}${nonarch_libdir}/tmpfiles.d
+    install -m 0644 ${WORKDIR}/atcd.conf ${D}${nonarch_libdir}/tmpfiles.d/
+
+    # The hook user's manager stops in 180 s, not systemd's default 90 s.
+    install -d ${D}${systemd_system_unitdir}/user@${ATC_HOOKS_UID}.service.d
+    install -m 0644 ${WORKDIR}/atcd-hook-user-stop-timeout.conf \
+        ${D}${systemd_system_unitdir}/user@${ATC_HOOKS_UID}.service.d/zz-atc-hook-user-stop-timeout.conf
+
+    # Members of group atc may run a shell as atc-hooks, for `atc` hook
+    # commands over ssh.
+    install -d ${D}${sysconfdir}/sudoers.d
+    install -m 0440 ${WORKDIR}/atc-shell.sudoers ${D}${sysconfdir}/sudoers.d/atc-shell
+
+    # Linger for atc-hooks: hooks run `systemctl --user` services, and the
+    # user's manager must run with no login session.
+    install -d ${D}${localstatedir}/lib/systemd/linger
+    touch ${D}${localstatedir}/lib/systemd/linger/atc-hooks
 }
 
-# Deliberately NOT created here. `atcd install-self` creates /var/atc with the
-# modes the traverse-grant walk expects; a hardened image umask of 077 otherwise
-# produces 0700 directories and breaks `atcd attach` with EACCES.
-FILES:${PN} = "${ATCD_GUARD_PATH} ${ATCD_REMOTE_PATH}"
+# Subordinate ids for atc-hooks, for rootless podman in hooks. A --system
+# user gets none from useradd. Written into the image at rootfs time only. On
+# a device that already has an entry, nothing changes.
+pkg_postinst:${PN}() {
+    for f in $D${sysconfdir}/subuid $D${sysconfdir}/subgid; do
+        touch "$f"
+        grep -q '^atc-hooks:' "$f" ||
+            echo "atc-hooks:${ATC_HOOKS_SUBID_BASE}:65536" >> "$f"
+    done
+}
+
+# /var/atc is NOT in the package. It is the mount point of the data
+# partition. systemd-tmpfiles sets its owner and mode at boot (atcd.conf), and
+# atcd-store-seed fills it.
+FILES:${PN} = "${ATCD_GUARD_PATH} ${ATCD_REMOTE_PATH} ${ATCD_LINK_PATH} \
+    ${systemd_system_unitdir} ${libexecdir}/atcd ${nonarch_libdir}/tmpfiles.d \
+    ${sysconfdir}/sudoers.d ${localstatedir}/lib/systemd/linger"
+
+# The sudoers rule needs sudo.
+RDEPENDS:${PN} += "sudo"
 
 # The release binary is a static musl ELF: it has no dynamic dependencies for
 # bitbake to resolve, and it is not built by this recipe's toolchain.

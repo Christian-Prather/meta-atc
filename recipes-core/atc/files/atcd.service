@@ -1,0 +1,28 @@
+[Unit]
+Description=atcd — atc OTA daemon
+After=network.target atcd-store-seed.service
+Requires=atcd-store-seed.service
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=atc
+Group=atc
+Delegate=
+RuntimeDirectory=atcd
+Environment=ATCD_STORE_ROOT=/var/atc
+Environment=ATCD_LIBEXEC=/usr/local/libexec
+AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_KILL
+SupplementaryGroups=systemd-journal
+ProtectSystem=full
+ReadWritePaths=/var/atc /var/lib/atc-hooks
+ExecStartPre=/usr/local/libexec/atcd-boot-confirm.sh
+ExecStart=/var/atc/channel/agency/atcd/delivery/current/atcd/atcd run --socket /run/atcd/atcd.sock --store-root /var/atc --socket-mode 0660 --hook-run-as-user atc-hooks
+Restart=always
+RestartSec=2
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=2000
+
+[Install]
+WantedBy=multi-user.target

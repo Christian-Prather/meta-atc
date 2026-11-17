@@ -57,6 +57,8 @@ IMAGE="$L/recipes-core/images/atc-image-ab.bb"
 SLOT_IMAGE="$L/recipes-core/images/atc-image-slot.bb"
 ATC_CONF="$L/conf/distro/include/atc.inc"
 HOOK="$L/recipes-core/bundles/files/atc-bundle-hook"
+ATCD_RECIPE="$L/recipes-core/atc/atcd_0.1.0.bb"
+ATCD_FILES="$L/recipes-core/atc/files"
 
 # The seven variables grub.cfg reads, and their fail-closed defaults. The
 # initial environment the recipe writes must hold exactly these values.
@@ -139,7 +141,9 @@ for f in "$WKS" "$GRUB_CFG" "$RECIPE" "$GRUB_APPEND" "$SYSTEM_CONF" "$TEGRA_CONF
   "$RAUC_APPEND" "$BUNDLE" "$RUNTIME" "$IMAGE" "$SLOT_IMAGE" \
   "$OS_DIR/atc-os-trial-deadline" "$OS_DIR/atc-os-trial-deadline.timer" \
   "$OS_DIR/atc-os-reboot.path" "$OS_DIR/atc-os-reboot.service" \
-  "$OS_DIR/10-atc-store.conf" "$KERNEL_APPEND" "$WATCHDOG_CFG" "$ATC_CONF" "$HOOK"; do
+  "$OS_DIR/10-atc-store.conf" "$KERNEL_APPEND" "$WATCHDOG_CFG" "$ATC_CONF" "$HOOK" \
+  "$ATCD_RECIPE" "$ATCD_FILES/atcd.service" "$ATCD_FILES/atcd-store-seed.service" \
+  "$ATCD_FILES/atcd-store-seed" "$ATCD_FILES/atcd.conf"; do
   if [ ! -f "$f" ]; then
     echo "FAIL: missing $f" >&2
     exit 1
@@ -340,6 +344,45 @@ for f in "${RAUC_NATIVE_APPENDS[@]}"; do
     fail "$(basename "$f") does not require rauc-version-atc.inc with the atc feature"
 done
 
+# ── atcd's service and store ────────────────────────────────────────────────
+#
+# The image carries the end state of a device-side `atcd install`. The unit
+# runs the store's atcd, and atcd-store-seed fills an empty store from the
+# image's copy. Both must name the same link, or a seeded store never starts.
+store_link="$(sed -n 's/^ATCD_STORE_LINK = "\(.*\)"$/\1/p' "$ATCD_RECIPE")"
+guard="$(sed -n 's/^ATCD_LIBEXEC = "\(.*\)"$/\1/p' "$ATCD_RECIPE")/atcd-boot-confirm.sh"
+[ "$store_link" = /var/atc/channel/agency/atcd/delivery/current/atcd/atcd ] ||
+  fail "ATCD_STORE_LINK is '$store_link', not the store's current atcd"
+grep -qE "^ExecStart=$store_link run .*--store-root /var/atc( |\$)" "$ATCD_FILES/atcd.service" ||
+  fail "atcd.service does not run $store_link on the store /var/atc"
+grep -qx "ExecStartPre=$guard" "$ATCD_FILES/atcd.service" ||
+  fail "atcd.service does not run the boot-confirm guard $guard before atcd"
+grep -qx 'Requires=atcd-store-seed.service' "$ATCD_FILES/atcd.service" ||
+  fail "atcd.service does not require atcd-store-seed.service, so a fresh store never starts"
+grep -qE '^After=.*\batcd-store-seed\.service\b' "$ATCD_FILES/atcd.service" ||
+  fail "atcd.service can start before atcd-store-seed.service fills the store"
+grep -qx "ConditionPathExists=!$store_link" "$ATCD_FILES/atcd-store-seed.service" ||
+  fail "atcd-store-seed.service does not skip a store that already holds atcd"
+grep -qx 'RequiresMountsFor=/var/atc' "$ATCD_FILES/atcd-store-seed.service" ||
+  fail "atcd-store-seed.service can seed the slot's empty mount point"
+grep -qx "LINK=\"\$STORE/${store_link#/var/atc/}\"" "$ATCD_FILES/atcd-store-seed" ||
+  fail "atcd-store-seed checks another link than atcd.service runs"
+grep -qx 'd /var/atc 0750 atc atc -' "$ATCD_FILES/atcd.conf" ||
+  fail "atcd.conf does not make /var/atc 0750 atc:atc; atc-hooks cannot traverse the store"
+# Fixed ids, from the atcd package, so both slots agree on the store's owners.
+grep -qE '^GROUPADD_PARAM:\$\{PN\} = "--system -g \$\{ATC_GID\} atc"$' "$ATCD_RECIPE" ||
+  fail "the atcd recipe does not create group atc with the fixed ATC_GID"
+grep -qE -- '--system -u \$\{ATC_UID\} -g atc .* atc; ' "$ATCD_RECIPE" ||
+  fail "the atcd recipe does not create user atc with the fixed ATC_UID"
+grep -qE -- '--system -u \$\{ATC_HOOKS_UID\} -g atc -G atc ' "$ATCD_RECIPE" ||
+  fail "the atcd recipe does not create user atc-hooks with the fixed ATC_HOOKS_UID"
+if grep -qE '(useradd|groupadd)[^;]* atc(-hooks)?;' "$RUNTIME"; then
+  fail "the runtime profile creates atc or atc-hooks; the atcd package owns them"
+fi
+if grep -E '^FILES' "$ATCD_RECIPE" | grep -q '/var/atc'; then
+  fail "the atcd package ships a path under /var/atc, the data partition's mount point"
+fi
+
 # ── The runtime profile ──────────────────────────────────────────────────────
 
 for img in "$IMAGE" "$SLOT_IMAGE"; do
@@ -394,14 +437,6 @@ done
 if grep -q 'atc_install_fstab_entries' "$IMAGE" "$SLOT_IMAGE"; then
   fail "an image recipe writes fstab lines itself; the runtime profile owns them"
 fi
-for want in 'useradd --system -u ${ATC_UID} -g atc ' 'useradd --system -u ${ATC_HOOKS_UID} -g atc '; do
-  grep -qF -- "$want" "$RUNTIME" ||
-    fail "the runtime profile does not run '$want', so the slots can disagree" \
-      "about who owns the store"
-done
-grep -qE '^EXTRA_USERS_PARAMS:prepend = ' "$RUNTIME" ||
-  fail "the runtime profile does not PREPEND its users, so atc-image.bb's" \
-    "groupadd -f atc gives the group a free id first"
 
 # ── grub.cfg: the defaults and the read ──────────────────────────────────────
 
