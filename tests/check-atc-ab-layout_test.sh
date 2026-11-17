@@ -40,6 +40,9 @@ SLOT_TRIAL_REL="recipes-core/atc-os/files/atc-slot-trial-grub"
 RAUC_CONF_APPEND_REL="recipes-core/rauc/rauc-conf-atc.inc"
 POLICY_REL="recipes-core/rauc/files/atc-rauc.conf"
 RAUC_APPEND_REL="recipes-core/rauc/rauc-atc.inc"
+RAUC_VERSION_REL="recipes-core/rauc/rauc-version-atc.inc"
+RAUC_NATIVE_REL="recipes-core/rauc/rauc-native_%.bbappend"
+RAUC_SDK_REL="recipes-core/rauc/nativesdk-rauc_%.bbappend"
 BUNDLE_REL="recipes-core/bundles/atc-bundle.bb"
 RUNTIME_REL="recipes-core/images/atc-ab-runtime.inc"
 IMAGE_REL="recipes-core/images/atc-image-ab.bb"
@@ -60,7 +63,8 @@ ALL_REL=("$WKS_REL" "$CFG_REL" "$RECIPE_REL" "$GRUB_APPEND_REL" "$CONF_REL"
   "$SLOT_REL" "$DEADLINE_REL" "$TIMER_REL" "$PATH_REL" "$REBOOT_REL"
   "$WATCHDOG_REL" "$KERNEL_REL" "$WDT_CFG_REL" "$TEGRA_CONF_REL"
   "$RAUC_CONF_APPEND_REL" "$OS_RECIPE_REL" "$SEAM_REL" "$PRE_INSTALL_REL"
-  "$SLOT_TRIAL_REL" "$ATC_CONF_REL" "$HOOK_REL" "$STORE_DROPIN_REL")
+  "$SLOT_TRIAL_REL" "$ATC_CONF_REL" "$HOOK_REL" "$STORE_DROPIN_REL"
+  "$RAUC_VERSION_REL" "$RAUC_NATIVE_REL" "$RAUC_SDK_REL")
 
 make_fixture() {
   local root="$1" rel
@@ -135,14 +139,47 @@ mutate "a bootname B on slot A's part is caught" "$CFG_REL" \
 mutate "a GRUB without regexp is caught" "$GRUB_APPEND_REL" 's/ reboot regexp"/ reboot"/'
 mutate "a GRUB change on every machine is caught" "$GRUB_APPEND_REL" \
   's/^GRUB_BUILDIN:append:qemux86-64 = /GRUB_BUILDIN:append = /' \
-  "grub-efi-atc.inc sets a variable without the :qemux86-64 override"
+  "grub-efi-atc.inc has a statement without the :qemux86-64 override"
 mutate "a kernel files path on every machine is caught" "$KERNEL_REL" \
   's/^FILESEXTRAPATHS:prepend:qemux86-64 := /FILESEXTRAPATHS:prepend := /' \
-  "linux-yocto-atc.inc sets a variable without the :qemux86-64 override"
+  "linux-yocto-atc.inc has a statement without the :qemux86-64 override"
+mutate "a GRUB override only in a comment is caught" "$GRUB_APPEND_REL" \
+  's/^GRUB_BUILDIN:append:qemux86-64 = \(.*\)$/GRUB_BUILDIN:append = \1 # :qemux86-64 only/' \
+  "grub-efi-atc.inc has a statement without the :qemux86-64 override"
+mutate "a kernel override only in the value is caught" "$KERNEL_REL" \
+  's|^SRC_URI:append:qemux86-64 = " file://atc-watchdog.cfg"$|SRC_URI:append = " file://atc-watchdog.cfg;x=:qemux86-64"|' \
+  "linux-yocto-atc.inc has a statement without the :qemux86-64 override"
+mutate "a kernel task on every machine is caught" "$KERNEL_REL" \
+  '$a do_configure:append() {\n    true\n}' \
+  "linux-yocto-atc.inc has a statement without the :qemux86-64 override"
+mutate "an inherit in the GRUB append is caught" "$GRUB_APPEND_REL" '$a inherit deploy' \
+  "grub-efi-atc.inc has a statement without the :qemux86-64 override"
 mutate "an unpinned RAUC is caught" "$ATC_CONF_REL" '/^PREFERRED_VERSION_rauc = /d' \
   "PREFERRED_VERSION_rauc to ATC_RAUC_VERSION"
 mutate "an unpinned rauc-native is caught" "$ATC_CONF_REL" '/^PREFERRED_VERSION_rauc-native = /d' \
   "PREFERRED_VERSION_rauc-native to"
+mutate "an unpinned nativesdk-rauc is caught" "$ATC_CONF_REL" '/^PREFERRED_VERSION_nativesdk-rauc = /d' \
+  "PREFERRED_VERSION_nativesdk-rauc to"
+mutate "a second RAUC preference below the pin is caught" "$ATC_CONF_REL" \
+  '/^PREFERRED_VERSION_rauc = /a PREFERRED_VERSION_rauc = "git"' \
+  "assigns PREFERRED_VERSION_rauc 2 times"
+mutate "a second rauc-native preference with an override is caught" "$ATC_CONF_REL" \
+  '$a PREFERRED_VERSION_rauc-native:qemux86-64 = "git"' \
+  "assigns PREFERRED_VERSION_rauc-native 2 times"
+mutate "a second ATC_RAUC_VERSION is caught" "$ATC_CONF_REL" \
+  '/^ATC_RAUC_VERSION = /a ATC_RAUC_VERSION = "1.14"' "ATC_RAUC_VERSION exactly once"
+mutate "a two-part RAUC version is caught" "$ATC_CONF_REL" \
+  's/^ATC_RAUC_VERSION = .*/ATC_RAUC_VERSION = "1.15"/' "to a release version"
+mutate "a version guard that never skips is caught" "$RAUC_VERSION_REL" \
+  's/raise bb.parse.SkipRecipe(/bb.note(/' "does not skip a RAUC recipe"
+mutate "a version guard on another variable is caught" "$RAUC_VERSION_REL" \
+  "s/d.getVar('ATC_RAUC_VERSION')/d.getVar('PREFERRED_VERSION_rauc')/" "does not skip a RAUC recipe"
+mutate "a device RAUC without the version guard is caught" "$RAUC_APPEND_REL" \
+  '/^require rauc-version-atc.inc$/d' "rauc-atc.inc does not require rauc-version-atc.inc"
+mutate "a rauc-native without the version guard is caught" "$RAUC_NATIVE_REL" \
+  '/rauc-version-atc.inc/d' "rauc-native_%.bbappend does not require rauc-version-atc.inc"
+mutate "a nativesdk-rauc guard without the feature is caught" "$RAUC_SDK_REL" \
+  's/^require .*/require rauc-version-atc.inc/' "nativesdk-rauc_%.bbappend does not require rauc-version-atc.inc"
 mutate "a RAUC pin to git is caught" "$ATC_CONF_REL" 's/^ATC_RAUC_VERSION = .*/ATC_RAUC_VERSION = "git"/' \
   "to a release version"
 mutate "a grub.cfg label the wks does not write is caught" "$CFG_REL" \
