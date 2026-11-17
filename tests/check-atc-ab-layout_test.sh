@@ -61,6 +61,11 @@ BOOT_DROPIN_REL="recipes-core/atc-os/files/10-atc-boot.conf"
 KERNEL_REL="recipes-kernel/linux/linux-yocto-atc.inc"
 WDT_CFG_REL="recipes-kernel/linux/files/atc-watchdog.cfg"
 ATC_CONF_REL="conf/distro/include/atc.inc"
+ATCD_RECIPE_REL="recipes-core/atc/atcd_0.1.0.bb"
+ATCD_UNIT_REL="recipes-core/atc/files/atcd.service"
+SEED_UNIT_REL="recipes-core/atc/files/atcd-store-seed.service"
+SEED_REL="recipes-core/atc/files/atcd-store-seed"
+TMPFILES_REL="recipes-core/atc/files/atcd.conf"
 HOOK_REL="recipes-core/bundles/files/atc-bundle-hook"
 
 ALL_REL=("$WKS_REL" "$CFG_REL" "$RECIPE_REL" "$GRUB_APPEND_REL" "$CONF_REL"
@@ -70,7 +75,8 @@ ALL_REL=("$WKS_REL" "$CFG_REL" "$RECIPE_REL" "$GRUB_APPEND_REL" "$CONF_REL"
   "$RAUC_CONF_APPEND_REL" "$OS_RECIPE_REL" "$SEAM_REL" "$PRE_INSTALL_REL"
   "$SLOT_TRIAL_REL" "$ATC_CONF_REL" "$HOOK_REL" "$STORE_DROPIN_REL"
   "$SEAM_MAP_REL" "$RAUC_CONF_BBAPPEND_REL" "$RAUC_BBAPPEND_REL" "$GRUB_BBAPPEND_REL"
-  "$BOOT_DROPIN_REL" "$RAUC_VERSION_REL" "$RAUC_NATIVE_REL" "$RAUC_SDK_REL")
+  "$BOOT_DROPIN_REL" "$RAUC_VERSION_REL" "$RAUC_NATIVE_REL" "$RAUC_SDK_REL"
+  "$ATCD_RECIPE_REL" "$ATCD_UNIT_REL" "$SEED_UNIT_REL" "$SEED_REL" "$TMPFILES_REL")
 
 make_fixture() {
   local root="$1" rel
@@ -160,6 +166,26 @@ mutate "a kernel task on every machine is caught" "$KERNEL_REL" \
   "linux-yocto-atc.inc has a statement without the :qemux86-64 override"
 mutate "an inherit in the GRUB append is caught" "$GRUB_APPEND_REL" '$a inherit deploy' \
   "grub-efi-atc.inc has a statement without the :qemux86-64 override"
+mutate "a unit that runs the image's atcd is caught" "$ATCD_UNIT_REL" \
+  's#^ExecStart=/var/atc/[^ ]* #ExecStart=/usr/bin/atcd #' "does not run"
+mutate "a unit without the guard is caught" "$ATCD_UNIT_REL" '/^ExecStartPre=/d' "boot-confirm guard"
+mutate "a unit that does not require the seed is caught" "$ATCD_UNIT_REL" '/^Requires=atcd-store-seed/d' \
+  "does not require atcd-store-seed"
+mutate "a unit ordered before the seed is caught" "$ATCD_UNIT_REL" 's/^After=.*/After=network.target/' \
+  "before atcd-store-seed"
+mutate "a seed that runs on every boot is caught" "$SEED_UNIT_REL" '/^ConditionPathExists=/d' \
+  "already holds atcd"
+mutate "a seed without the store mount is caught" "$SEED_UNIT_REL" '/^RequiresMountsFor=/d' "mount point"
+mutate "a seed of another link is caught" "$SEED_REL" 's#/delivery/current/#/delivery/next/#' "another link"
+mutate "a 0700 store root is caught" "$TMPFILES_REL" 's#^d /var/atc 0750#d /var/atc 0700#' "0750"
+mutate "a group atc without the fixed gid is caught" "$ATCD_RECIPE_REL" 's/-g ${ATC_GID} atc"/atc"/' "fixed ATC_GID"
+mutate "a user atc without the fixed uid is caught" "$ATCD_RECIPE_REL" 's/-u ${ATC_UID} //' "fixed ATC_UID"
+mutate "a user atc-hooks without the fixed uid is caught" "$ATCD_RECIPE_REL" 's/-u ${ATC_HOOKS_UID} //' \
+  "fixed ATC_HOOKS_UID"
+mutate "users made again in the runtime profile are caught" "$RUNTIME_REL" \
+  '$a EXTRA_USERS_PARAMS:prepend = "groupadd -g 2000 atc; "' "atcd package owns them"
+mutate "a package path under /var/atc is caught" "$ATCD_RECIPE_REL" \
+  's#^FILES:${PN} = "#FILES:${PN} = "/var/atc #' "data partition's mount point"
 mutate "an unpinned RAUC is caught" "$ATC_CONF_REL" '/^PREFERRED_VERSION_rauc = /d' \
   "PREFERRED_VERSION_rauc to ATC_RAUC_VERSION"
 mutate "an unpinned rauc-native is caught" "$ATC_CONF_REL" '/^PREFERRED_VERSION_rauc-native = /d' \
@@ -259,8 +285,6 @@ mutate "a factory image without the runtime profile is caught" "$IMAGE_REL" '/^r
 mutate "a dropped data-partition mount is caught" "$RUNTIME_REL" '/^PARTLABEL=atcdata/d'
 mutate "a dropped ESP mount is caught" "$RUNTIME_REL" '/^PARTLABEL=atcesp/d'
 mutate "a profile without RAUC is caught" "$RUNTIME_REL" 's/^IMAGE_INSTALL += "rauc /IMAGE_INSTALL += "/'
-mutate "an atc user with a free id is caught" "$RUNTIME_REL" 's/useradd --system -u \${ATC_UID} /useradd --system /'
-mutate "users appended after the base groupadd are caught" "$RUNTIME_REL" 's/^EXTRA_USERS_PARAMS:prepend = /EXTRA_USERS_PARAMS:append = /'
 
 # grub.cfg: the defaults and the read.
 mutate "a wrong fail-closed default is caught" "$CFG_REL" '/^function atc_set_defaults {/,/^}/ s/set B_OK=0/set B_OK=1/'
