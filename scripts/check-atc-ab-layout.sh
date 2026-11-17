@@ -406,16 +406,31 @@ grep -qxF "  su -s /bin/sh -c \"test -s '\$LINK' && test -x '\$LINK'\" atc" "$AT
   fail "atcd-store-seed does not check, as user atc, that the store's atcd can run"
 grep -qx 'if \[ ! -s "$LINK" \]; then' "$ATCD_FILES/atcd-store-seed" ||
   fail "atcd-store-seed does not keep a store that already has an atcd binary"
-# The grants run on every run, at the top level (no indent, so in no branch),
-# after install-self and before the check. A power cut can stop them part way.
-seed_order=""
-for step in 'fi' 'chown -R atc:atc "$STORE"' 'for p in "$target" "$LINK"; do' \
-  '    [ -L "$d" ] || chmod g+x "$d"' 'chmod g+x "$STORE"' 'runnable || {'; do
-  seed_order="$seed_order $(grep -nxF -- "$step" "$ATCD_FILES/atcd-store-seed" | head -n 1 | cut -d: -f1)"
+# The grants run on every run, after install-self and before the check. A
+# power cut can stop them part way, so no branch may skip them. The span is
+# from the `fi` that closes the install-self branch to the check. It holds no
+# conditional, and it holds the four grant lines in order.
+seed_file="$ATCD_FILES/atcd-store-seed"
+install_if="$(grep -nxF 'if [ ! -s "$LINK" ]; then' "$seed_file" | head -n 1 | cut -d: -f1)"
+check_line="$(grep -nxF 'runnable || {' "$seed_file" | head -n 1 | cut -d: -f1)"
+install_fi=""
+if [ -n "$install_if" ]; then
+  install_fi="$(awk -v from="$install_if" 'NR > from && /^fi$/ { print NR; exit }' "$seed_file")"
+fi
+grant_span=""
+if [ -n "$install_fi" ] && [ -n "$check_line" ] && [ "$install_fi" -lt "$check_line" ]; then
+  grant_span="$(sed -n "$((install_fi + 1)),$((check_line - 1))p" "$seed_file" | grep -vE '^[[:space:]]*(#|$)')"
+fi
+grant_order=""
+for step in 'chown -R atc:atc "$STORE"' 'for p in "$target" "$LINK"; do' \
+  '    [ -L "$d" ] || chmod g+x "$d"' 'chmod g+x "$STORE"'; do
+  grant_order="$grant_order $(grep -nxF -- "$step" <<< "$grant_span" | head -n 1 | cut -d: -f1)"
 done
 # shellcheck disable=SC2086  # word splitting of the line numbers is the point
-if [ "$(printf '%s\n' $seed_order | wc -l)" != 6 ] ||
-  [ "$(printf '%s\n' $seed_order)" != "$(printf '%s\n' $seed_order | sort -n)" ]; then
+if [ -z "$grant_span" ] ||
+  grep -qE '^[[:space:]]*(if|elif|else|fi|case|esac|until)([[:space:]]|;|$)' <<< "$grant_span" ||
+  [ "$(printf '%s\n' $grant_order | wc -l)" != 4 ] ||
+  [ "$(printf '%s\n' $grant_order)" != "$(printf '%s\n' $grant_order | sort -n)" ]; then
   fail "atcd-store-seed does not repeat the grants on every run, before it checks that atc can run atcd"
 fi
 # The unit names the script by the path the recipe installs it to.
