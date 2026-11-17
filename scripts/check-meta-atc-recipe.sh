@@ -410,7 +410,9 @@ reaches the qemu images or never applies: $plain"
 #     names (edk2-firmware-tegra, linux-jammy-nvidia-tegra, cuda-toolkit) have
 #     no common prefix. Add a line here only for a recipe that every build has.
 ALLOWED_APPENDS="recipes-bsp/grub/grub-efi_%.bbappend
+recipes-core/rauc/nativesdk-rauc_%.bbappend
 recipes-core/rauc/rauc-conf.bbappend
+recipes-core/rauc/rauc-native_%.bbappend
 recipes-core/rauc/rauc_%.bbappend
 recipes-kernel/linux/linux-yocto_%.bbappend"
 appends="$(cd "$LAYER" && find -L . -path ./dynamic-layers -prune -o -type f -name '*.bbappend' -print |
