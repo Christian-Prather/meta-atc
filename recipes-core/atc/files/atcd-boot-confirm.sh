@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+# atcd-boot-guard-contract: 2
 # systemd ExecStartPre guard for atcd A/B boot-confirm rollback.
 # Increments the boot-attempt counter; if it exceeds the limit, reverts atcd to
 # the prior version via `atcd rollback` (which goes through the store's
@@ -30,7 +31,25 @@ if [ -d "$ATCD_CHANNEL/release" ] && [ ! -L "$ATCD_CHANNEL/release" ]; then
 else
   ATCD_RELEASE_DIR=delivery
 fi
-ATCD="${ATCD_BIN:-$ATCD_CHANNEL/$ATCD_RELEASE_DIR/current/atcd/atcd}"
+# Contract 2 (server-delivered atcd design, section 5.2.3): count, roll back
+# and reset with the CONFIRMED atcd, the last one that ran healthy. The store
+# writes `confirmed` before it flips `current` to a candidate. A candidate that
+# cannot run at all (a same-arch ELF with no runtime linker) cannot run these
+# verbs either, so a guard that used `current` stayed inert on it. A store with
+# no `confirmed` link (a first install, or no floor yet) keeps `current`. D4's
+# supervision check reads the contract line at the top of this file.
+ATCD_RELEASE_ROOT="$ATCD_CHANNEL/$ATCD_RELEASE_DIR"
+if [ -n "${ATCD_BIN:-}" ]; then
+  ATCD="$ATCD_BIN"
+# `confirmed` must be the store's symlink: a real directory of that name is
+# not the pointer.
+elif [ -L "$ATCD_RELEASE_ROOT/confirmed" ] &&
+  [ -f "$ATCD_RELEASE_ROOT/confirmed/atcd/atcd" ] &&
+  [ -x "$ATCD_RELEASE_ROOT/confirmed/atcd/atcd" ]; then
+  ATCD="$ATCD_RELEASE_ROOT/confirmed/atcd/atcd"
+else
+  ATCD="$ATCD_RELEASE_ROOT/current/atcd/atcd"
+fi
 
 count_raw="$("$ATCD" boot-confirm increment --store-root "$STORE_ROOT" 2> /dev/null)" &&
   increment_ran=1 || increment_ran=0
