@@ -44,13 +44,17 @@ With the feature, each machine gets these changes to other layers' recipes:
 |---|---|---|---|
 | `grub-efi` | `echo`, `reboot` and `regexp` built in | none | none |
 | `linux-yocto` | the i6300esb watchdog driver built in | none | not built |
-| `rauc`, `rauc-native` | version `ATC_RAUC_VERSION`, the atc D-Bus policy, no `rauc-mark-good` | the same | the same |
+| `rauc` | version `ATC_RAUC_VERSION`, the atc D-Bus policy, no `rauc-mark-good` | the same | the same |
+| `rauc-native`, `nativesdk-rauc` | version `ATC_RAUC_VERSION` | the same | the same |
 | `rauc-conf` | the GRUB `system.conf` and the keyring | the GRUB `system.conf` and the keyring | the nvbootctrl `system.conf` and the keyring |
 | meta-tegra BSP | none | none | the redundant flash layout, one boot per trial, a 4 GiB `UDA`, `panic=5`, and the flash tools under qemu on an arm64 build host |
 
 The layer picks the RAUC version, because atcd drives RAUC. `atc.inc` sets
 `ATC_RAUC_VERSION` and the `PREFERRED_VERSION` of `rauc`, `rauc-native` and
-`nativesdk-rauc` to it.
+`nativesdk-rauc` to it. The layer skips every other version of these three
+recipes. If meta-rauc has no recipe of that version, a build that needs RAUC
+stops with "Nothing PROVIDES" and names the version. It does not fall back to
+the git recipe.
 
 ## Set the machine
 
