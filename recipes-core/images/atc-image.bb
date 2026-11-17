@@ -1,7 +1,7 @@
 SUMMARY = "Minimal image an atc controller can bootstrap and push to"
-DESCRIPTION = "A core image with systemd as init, an SSH server, sudo, and a \
-deploy user in the atc group. `atc bootstrap atcd install` reaches this image \
-over SSH, renders the systemd unit, and seeds the store-managed atcd."
+DESCRIPTION = "A core image with systemd as init, an SSH server, sudo, atcd \
+with its service and users, and a deploy user in the atc group. The first \
+boot seeds the store with the image's atcd. atc reaches the device over SSH."
 LICENSE = "MIT"
 
 inherit core-image extrausers features_check
@@ -49,8 +49,9 @@ ATC_DEPLOY_UID ?= "2010"
 # password)` with `!`, a key login with `*`.
 ATC_DEPLOY_SSH_KEY ?= ""
 
-# `atc` is the only supplementary group, and it is created here because nothing
-# else does. Deliberately NOT `-G atc,sudo`: a `sudo` group is a Debian
+# `atc` is the only supplementary group. The atcd package creates it with its
+# fixed gid, so `groupadd -f` finds it and changes nothing. Deliberately NOT
+# `-G atc,sudo`: a `sudo` group is a Debian
 # convention that Yocto's sudo package does not create, so useradd would fail on
 # an unknown group and the deploy account would never exist. Sudo rights come
 # from the drop-in below, which grants them by USERNAME and needs no group.
@@ -100,23 +101,18 @@ refuse it."
     chown -R "$deploy_uid:$deploy_gid" "$ssh_dir"
 }
 
-# The image must NOT pre-create /var/atc. `atcd install-self` creates it with the
-# modes the traverse-grant walk expects; a hardened umask otherwise gives 0700
-# directories and `atcd attach` fails EACCES. This check fails the build if some
-# other recipe adds it.
+# The rootfs must NOT carry /var/atc. It is the mount point of the data
+# partition, and the slot must hold nothing there: a file under it would hide
+# beneath the mount, and a directory made at a hardened umask of 077 is 0700,
+# which breaks `atcd attach` with EACCES. systemd-tmpfiles sets the owner and
+# mode of the mounted store at boot (the atcd package's atcd.conf). This check
+# fails the build if some recipe adds the path.
 atc_refuse_prebuilt_store_root() {
     if [ -e "${IMAGE_ROOTFS}/var/atc" ]; then
-        bbfatal "/var/atc exists in the rootfs. It must be created by \
-'atcd install-self' on the device, not baked into the image: a 0700 store root \
-breaks 'atcd attach' with EACCES."
+        bbfatal "/var/atc exists in the rootfs. It is the data partition's \
+mount point. systemd-tmpfiles sets up the store at boot, so no recipe may \
+install a path under it."
     fi
-}
-
-# `atc bootstrap atcd install` links /usr/local/bin/atcd into the store with a
-# plain `ln -s`, and atc reaches atcd through that path over ssh. poky creates
-# no /usr/local/bin, so without this the install fails with ATC-E0416.
-atc_install_local_bin() {
-    install -d -m 0755 ${IMAGE_ROOTFS}/usr/local/bin
 }
 
 # /var/tmp as a directory on the rootfs. poky's base-files links it into
@@ -150,7 +146,6 @@ sshd refuses a key login to an account whose field starts with '!'."
 IMAGE_PREPROCESS_COMMAND += "atc_install_deploy_ssh_key atc_assert_deploy_password_field"
 
 ROOTFS_POSTPROCESS_COMMAND += " \
-    atc_install_local_bin \
     atc_install_deploy_sudoers \
     atc_refuse_prebuilt_store_root \
     "
