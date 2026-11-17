@@ -90,6 +90,21 @@ The track is `stable` by default. To take another one:
 ATCD_TRACK = "nightly"
 ```
 
+The image starts atcd at boot. The atcd package carries what a device-side
+install of atcd would write:
+
+- the users `atc` and `atc-hooks` and the group `atc`, with fixed ids (2000,
+  2001 and 2000);
+- `atcd.service`, enabled, and the boot-confirm guard it runs first;
+- the owner and mode of the store root `/var/atc`, set by systemd-tmpfiles at
+  boot;
+- the `/usr/local/bin/atcd` link, the sudoers rule, subordinate ids and linger
+  for `atc-hooks`.
+
+The store is on the data partition. At the first boot on an empty store,
+`atcd-store-seed.service` copies the image's atcd into it. atcd then updates
+itself inside the store. A later image does not replace the store's atcd.
+
 ## Build
 
 | Target | Output |
@@ -129,6 +144,7 @@ whole-disk image written to a running device erases its store and its identity.
 | `ATCD_TRACK` | `stable` | the release track the image's atcd comes from |
 | `ATC_DEPLOY_USER` | `atc-deploy` | the account that atc logs in as |
 | `ATC_DEPLOY_SSH_KEY` | empty | an SSH public key to install for that account |
+| `ATC_UID`, `ATC_GID`, `ATC_HOOKS_UID` | `2000`, `2000`, `2001` | the ids of `atc`, its group and `atc-hooks`. Every image of one fleet must use the same values |
 | `ATC_OS_VERSION` | empty | the version that the bundle and `/etc/atc-os-version` carry |
 | `ATC_SLOT_KIB` | `1048576` | the size limit of one rootfs slot, in KiB |
 | `ATC_TEGRA_REDUNDANT` | `1` | `0` selects meta-tegra's single-rootfs layout. The A/B targets are then skipped |
