@@ -406,10 +406,17 @@ grep -qxF "  su -s /bin/sh -c \"test -s '\$LINK' && test -x '\$LINK'\" atc" "$AT
   fail "atcd-store-seed does not check, as user atc, that the store's atcd can run"
 grep -qx 'if \[ ! -s "$LINK" \]; then' "$ATCD_FILES/atcd-store-seed" ||
   fail "atcd-store-seed does not keep a store that already has an atcd binary"
-if ! grep -qx 'if ! runnable; then' "$ATCD_FILES/atcd-store-seed" ||
-  ! grep -qx '  chown -R atc:atc "$STORE"' "$ATCD_FILES/atcd-store-seed" ||
-  ! grep -qx '      \[ -L "$d" \] || chmod g+x "$d"' "$ATCD_FILES/atcd-store-seed"; then
-  fail "atcd-store-seed does not repeat the grants on a store that atc cannot run"
+# The grants run on every run, at the top level (no indent, so in no branch),
+# after install-self and before the check. A power cut can stop them part way.
+seed_order=""
+for step in 'fi' 'chown -R atc:atc "$STORE"' 'for p in "$target" "$LINK"; do' \
+  '    [ -L "$d" ] || chmod g+x "$d"' 'chmod g+x "$STORE"' 'runnable || {'; do
+  seed_order="$seed_order $(grep -nxF -- "$step" "$ATCD_FILES/atcd-store-seed" | head -n 1 | cut -d: -f1)"
+done
+# shellcheck disable=SC2086  # word splitting of the line numbers is the point
+if [ "$(printf '%s\n' $seed_order | wc -l)" != 6 ] ||
+  [ "$(printf '%s\n' $seed_order)" != "$(printf '%s\n' $seed_order | sort -n)" ]; then
+  fail "atcd-store-seed does not repeat the grants on every run, before it checks that atc can run atcd"
 fi
 # The unit names the script by the path the recipe installs it to.
 grep -qx 'ExecStart=@LIBEXECDIR@/atcd/atcd-store-seed' "$ATCD_FILES/atcd-store-seed.service" ||
