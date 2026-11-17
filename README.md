@@ -38,6 +38,20 @@ the atc images are skipped.
 The atcd binary is closed-source. A product must also accept its license. See
 [atcd license](#atcd-license).
 
+With the feature, each machine gets these changes to other layers' recipes:
+
+| Recipe | `qemux86-64` | `qemuarm64` | `tegra234` |
+|---|---|---|---|
+| `grub-efi` | `echo`, `reboot` and `regexp` built in | none | none |
+| `linux-yocto` | the i6300esb watchdog driver built in | none | not built |
+| `rauc`, `rauc-native` | version `ATC_RAUC_VERSION`, the atc D-Bus policy, no `rauc-mark-good` | the same | the same |
+| `rauc-conf` | the GRUB `system.conf` and the keyring | the GRUB `system.conf` and the keyring | the nvbootctrl `system.conf` and the keyring |
+| meta-tegra BSP | none | none | the redundant flash layout, one boot per trial, a 4 GiB `UDA`, `panic=5`, and the flash tools under qemu on an arm64 build host |
+
+The layer picks the RAUC version, because atcd drives RAUC. `atc.inc` sets
+`ATC_RAUC_VERSION` and the `PREFERRED_VERSION` of `rauc`, `rauc-native` and
+`nativesdk-rauc` to it.
+
 ## Set the machine
 
 Set `MACHINE` in `local.conf`:
