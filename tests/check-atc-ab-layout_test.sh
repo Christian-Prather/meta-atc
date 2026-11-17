@@ -178,6 +178,19 @@ mutate "a two-part RAUC version is caught" "$ATC_CONF_REL" \
   's/^ATC_RAUC_VERSION = .*/ATC_RAUC_VERSION = "1.15"/' "to a release version"
 mutate "a version guard that never skips is caught" "$RAUC_VERSION_REL" \
   's/raise bb.parse.SkipRecipe(/bb.note(/' "does not skip a RAUC recipe"
+mutate "a version guard that compares the pin with itself is caught" "$RAUC_VERSION_REL" \
+  "s/d.getVar('PV')/d.getVar('ATC_RAUC_VERSION')/" "does not skip a RAUC recipe"
+mutate "a version guard with the raise commented out is caught" "$RAUC_VERSION_REL" \
+  's/^        raise bb.parse.SkipRecipe(/        pass  # raise bb.parse.SkipRecipe(/' "does not skip a RAUC recipe"
+mutate "an exported second ATC_RAUC_VERSION is caught" "$ATC_CONF_REL" \
+  '$a export ATC_RAUC_VERSION = "1.15.1+git${SRCPV}"' "ATC_RAUC_VERSION exactly once"
+mutate "an unset RAUC preference is caught" "$ATC_CONF_REL" \
+  '$a unset PREFERRED_VERSION_rauc-native' "assigns PREFERRED_VERSION_rauc-native 2 times"
+# A flag of a scoped name is scoped too: the scope check ends at the "[".
+case_n=$((case_n + 1))
+make_fixture "$tmp/case-$case_n"
+echo 'GRUB_BUILDIN:append:qemux86-64[doc] = "atc built-ins"' >> "$tmp/case-$case_n/$GRUB_APPEND_REL"
+expect pass "a GRUB flag on qemux86-64 passes the scope check" "$tmp/case-$case_n"
 mutate "a version guard on another variable is caught" "$RAUC_VERSION_REL" \
   "s/d.getVar('ATC_RAUC_VERSION')/d.getVar('PREFERRED_VERSION_rauc')/" "does not skip a RAUC recipe"
 mutate "a device RAUC without the version guard is caught" "$RAUC_APPEND_REL" \

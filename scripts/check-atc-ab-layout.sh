@@ -104,6 +104,7 @@ unscoped_statement() {
     else
       return 0
     fi
+    name="${name%%[*}"
     [[ "$name" =~ (^|:)qemux86-64(:|$) ]] || return 0
   done < "$1"
   return 1
@@ -329,8 +330,10 @@ grep -qx 'SRC_URI:append:qemux86-64 = " file://atc-watchdog.cfg"' "$KERNEL_APPEN
 # The layer owns the RAUC version: atcd drives RAUC, and rauc-native signs
 # the bundles that the device's RAUC reads.
 # Each name must be assigned exactly once: bitbake uses the last assignment,
-# so a second line below the pin replaces it.
-[ "$(grep -cE '^[[:space:]]*ATC_RAUC_VERSION[[:space:]:?+.=]' "$ATC_CONF")" = 1 ] ||
+# so a second line below the pin replaces it. `export NAME = ` assigns too, and
+# `unset NAME` removes the pin.
+assigned='^[[:space:]]*((export|unset)[[:space:]]+)?'
+[ "$(grep -cE "${assigned}ATC_RAUC_VERSION([[:space:]:?+.=]|$)" "$ATC_CONF")" = 1 ] ||
   fail "atc.inc does not assign ATC_RAUC_VERSION exactly once"
 rauc_version="$(sed -n 's/^ATC_RAUC_VERSION = "\(.*\)"$/\1/p' "$ATC_CONF")"
 [[ "$rauc_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
@@ -338,13 +341,14 @@ rauc_version="$(sed -n 's/^ATC_RAUC_VERSION = "\(.*\)"$/\1/p' "$ATC_CONF")"
 for pkg in rauc rauc-native nativesdk-rauc; do
   grep -qxF "PREFERRED_VERSION_$pkg = \"\${ATC_RAUC_VERSION}\"" "$ATC_CONF" ||
     fail "atc.inc does not pin PREFERRED_VERSION_$pkg to ATC_RAUC_VERSION"
-  n="$(grep -cE "^[[:space:]]*PREFERRED_VERSION_${pkg}[[:space:]:?+.=]" "$ATC_CONF")"
+  n="$(grep -cE "${assigned}PREFERRED_VERSION_${pkg}([[:space:]:?+.=]|$)" "$ATC_CONF")"
   [ "$n" = 1 ] ||
     fail "atc.inc assigns PREFERRED_VERSION_$pkg $n times, and bitbake uses the last one"
 done
 # PREFERRED_VERSION falls back to another recipe when no recipe has that
 # version. The version guard skips every other version, so the build stops.
-if ! grep -qF "raise bb.parse.SkipRecipe(" "$RAUC_VERSION_INC" ||
+if ! grep -qxF '        raise bb.parse.SkipRecipe("%s is version %s, and the atc distro pins "' "$RAUC_VERSION_INC" ||
+  ! grep -qxF "    pv = d.getVar('PV')" "$RAUC_VERSION_INC" ||
   ! grep -qxF "    if pv != want:" "$RAUC_VERSION_INC" ||
   ! grep -qxF "    want = d.getVar('ATC_RAUC_VERSION')" "$RAUC_VERSION_INC"; then
   fail "rauc-version-atc.inc does not skip a RAUC recipe whose PV is not ATC_RAUC_VERSION"
