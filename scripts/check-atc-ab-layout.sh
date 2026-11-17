@@ -6,7 +6,7 @@
 #   wic/atc-ab.wks.in                               partition labels
 #   recipes-bsp/atc-grub-env/files/atc-ab-grub.cfg  the slot decision
 #   recipes-bsp/atc-grub-env/atc-grub-env_1.0.bb    the initial grubenv
-#   recipes-bsp/grub/grub-efi_%.bbappend            GRUB's built-ins
+#   recipes-bsp/grub/grub-efi-atc.inc               GRUB's built-ins
 #   recipes-core/rauc/files/system.conf             RAUC's slots
 #   recipes-core/rauc/files/atc-rauc.conf           the D-Bus policy
 #   recipes-core/rauc/rauc_%.bbappend               the stock policy goes
@@ -267,6 +267,16 @@ grep -qx 'CONFIG_I6300ESB_WDT=y' "$WATCHDOG_CFG" ||
 grep -qx 'SRC_URI:append:qemux86-64 = " file://atc-watchdog.cfg"' "$KERNEL_APPEND" ||
   fail "the kernel bbappend does not apply the watchdog fragment on qemux86-64"
 
+# The layer owns the RAUC version: atcd drives RAUC, and rauc-native signs
+# the bundles that the device's RAUC reads.
+rauc_version="$(sed -n 's/^ATC_RAUC_VERSION = "\(.*\)"$/\1/p' "$ATC_CONF")"
+[[ "$rauc_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] ||
+  fail "atc.inc does not pin ATC_RAUC_VERSION to a release version, it is '$rauc_version'"
+for pkg in rauc rauc-native nativesdk-rauc; do
+  grep -qxF "PREFERRED_VERSION_$pkg = \"\${ATC_RAUC_VERSION}\"" "$ATC_CONF" ||
+    fail "atc.inc does not pin PREFERRED_VERSION_$pkg to ATC_RAUC_VERSION"
+done
+
 # ── The runtime profile ──────────────────────────────────────────────────────
 
 for img in "$IMAGE" "$SLOT_IMAGE"; do
@@ -502,8 +512,15 @@ elif ! grep -qx 'reboot' < <(sed -n "$boot_line,\$p" "$GRUB_CFG"); then
 fi
 
 for module in echo reboot regexp; do
-  grep -qE "^GRUB_BUILDIN:append = \".*\\b$module\\b" "$GRUB_APPEND" ||
-    fail "GRUB_BUILDIN does not add '$module', which grub.cfg runs"
+  grep -qE "^GRUB_BUILDIN:append:qemux86-64 = \".*\\b$module\\b" "$GRUB_APPEND" ||
+    fail "GRUB_BUILDIN does not add '$module' on qemux86-64, which grub.cfg runs"
+done
+# Only the GRUB backend's machine gets a changed GRUB or kernel. A line
+# without the machine override changes the recipe for every machine.
+for f in "$GRUB_APPEND" "$KERNEL_APPEND"; do
+  if grep -E '^[A-Za-z_][^ =]* *[:?+.]*=' "$f" | grep -qv ':qemux86-64'; then
+    fail "$(basename "$f") sets a variable without the :qemux86-64 override"
+  fi
 done
 
 # ── The image recipe and the initial environment ─────────────────────────────
