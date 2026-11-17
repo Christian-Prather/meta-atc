@@ -7,9 +7,12 @@
 #   curl -fsSL https://atc.dev/agency/nightly/install-atcd.sh | sudo sh -s -- ...
 #
 # Every argument goes to `atcd install` unchanged. Run `atcd install --help`
-# for the flags. This script installs nothing itself. One addition: if PID 1
-# is not systemd, the script adds --no-service. atcd then seeds the store and
-# writes no unit.
+# for the flags. This script installs nothing itself. Two additions: it hands
+# the verified index.json and index.json.sig to atcd as --index and
+# --index-sig, so a floor-signed release seeds the device's atcd floor. An atcd
+# without those flags gets neither, and so does a run that passes either flag,
+# --from or --config itself. And if PID 1 is not systemd, the script adds --no-service. atcd then
+# seeds the store and writes no unit.
 #
 # POSIX sh: a device can have no bash.
 #
@@ -320,8 +323,16 @@ fi
 # take an unreadable file as systemd. Do not probe for systemctl: a container
 # can hold systemctl and /run/systemd/system with no systemd running.
 want_service=yes
+own_index=no
 for a in "$@"; do
-  case "$a" in --no-service) want_service=no ;; esac
+  case "$a" in
+    --no-service) want_service=no ;;
+    # The verified index signs the downloaded atcd only: a caller's --from
+    # or --config (which can name `from`) installs another binary.
+    --index | --index=* | --index-sig | --index-sig=* | --from | --from=* | --config | --config=*)
+      own_index=yes
+      ;;
+  esac
 done
 if [ "$want_service" = yes ] && init=$(cat "$INIT_COMM" 2> /dev/null) && [ "$init" != systemd ]; then
   info "PID 1 is '$init', not systemd: adding --no-service. atcd seeds the store and writes no unit."
@@ -329,6 +340,16 @@ if [ "$want_service" = yes ] && init=$(cat "$INIT_COMM" 2> /dev/null) && [ "$ini
 fi
 
 chmod 0755 "$work/atcd"
+# The verified index is the proof that seeds the atcd floor. An atcd from
+# before --index refuses an unknown flag, so ask its help first. A caller who
+# gives --index or --index-sig keeps them, and the script adds neither.
+help=""
+if [ "$own_index" = no ]; then
+  help=$("$work/atcd" install --help 2> /dev/null < /dev/null) || help=""
+fi
+case "$help" in
+  *--index-sig*) set -- --index "$work/index.json" --index-sig "$work/index.json.sig" "$@" ;;
+esac
 info "running: atcd install $*"
 # Not `exec`: the EXIT trap must still remove the temporary copy. stdin is
 # /dev/null, so atcd cannot read the rest of a `curl | sh` script.
