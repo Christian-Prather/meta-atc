@@ -29,4 +29,8 @@
 # `test` is NOT added here, though the config leans on it just as hard. It is
 # already built in: the slot comparisons worked on the image that could not
 # echo, which is the whole reason the failure was silent.
-GRUB_BUILDIN:append = " echo reboot regexp"
+#
+# qemux86-64 only, the one machine of the GRUB slot backend (atc-grub-env's
+# COMPATIBLE_MACHINE). Any other machine builds poky's GRUB unchanged. A
+# Jetson boots through NVIDIA's launcher and gets no GRUB change at all.
+GRUB_BUILDIN:append:qemux86-64 = " echo reboot regexp"
