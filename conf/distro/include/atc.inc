@@ -36,8 +36,11 @@ TEGRA_BOOTCONTROL_OVERLAYS:append:tegra234 = "${@' L4TConfiguration-AtcRootfsRet
 # The RAUC version. atcd drives RAUC to install and confirm a slot, so this
 # layer picks the version, not meta-rauc's default. meta-rauc at the commit
 # conf/layers.pin names carries this version and a git recipe. rauc-native
-# signs the bundles on the build host, so it gets the same version as the
-# device's RAUC.
+# signs the bundles on the build host, and nativesdk-rauc signs them from an
+# SDK, so both get the same version as the device's RAUC. A missed
+# PREFERRED_VERSION falls back to the git recipe, so
+# recipes-core/rauc/rauc-version-atc.inc skips every other version of the
+# three recipes.
 ATC_RAUC_VERSION = "1.15.2"
 PREFERRED_VERSION_rauc = "${ATC_RAUC_VERSION}"
 PREFERRED_VERSION_rauc-native = "${ATC_RAUC_VERSION}"

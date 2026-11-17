@@ -1,3 +1,6 @@
+# Build only the RAUC version that atc.inc pins.
+require rauc-version-atc.inc
+
 # Replace RAUC's stock D-Bus policy with the atc one.
 #
 # The stock policy allows every local user to call RAUC, which means any user

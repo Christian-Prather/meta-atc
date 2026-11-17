@@ -10,6 +10,7 @@
 #   recipes-core/rauc/files/system.conf             RAUC's slots
 #   recipes-core/rauc/files/atc-rauc.conf           the D-Bus policy
 #   recipes-core/rauc/rauc_%.bbappend               the stock policy goes
+#   recipes-core/rauc/rauc-version-atc.inc          one RAUC version builds
 #   recipes-core/bundles/atc-bundle.bb              the bundle
 #   recipes-core/images/atc-ab-runtime.inc          the runtime profile
 #   recipes-core/images/atc-image-ab.bb             what reaches the ESP
@@ -44,6 +45,9 @@ OS_RECIPE="$L/recipes-core/atc-os/atc-os_1.0.bb"
 SEAM="$L/classes/atc-slot-backend.bbclass"
 POLICY="$L/recipes-core/rauc/files/atc-rauc.conf"
 RAUC_APPEND="$L/recipes-core/rauc/rauc-atc.inc"
+RAUC_VERSION_INC="$L/recipes-core/rauc/rauc-version-atc.inc"
+RAUC_NATIVE_APPENDS=("$L/recipes-core/rauc/rauc-native_%.bbappend"
+  "$L/recipes-core/rauc/nativesdk-rauc_%.bbappend")
 BUNDLE="$L/recipes-core/bundles/atc-bundle.bb"
 RUNTIME="$L/recipes-core/images/atc-ab-runtime.inc"
 OS_DIR="$L/recipes-core/atc-os/files"
@@ -64,6 +68,41 @@ failures=0
 fail() {
   echo "FAIL: $*" >&2
   failures=$((failures + 1))
+}
+
+# Succeed when a bitbake file has a top-level statement that does not carry
+# the qemux86-64 machine override. Only the statement's left-hand side counts:
+# a value or a trailing comment that holds ":qemux86-64" does not scope it.
+# An assignment and a function header are checked by their name. Any other
+# statement (inherit, require, export, addtask) cannot carry the override, so
+# it reaches every machine. Function bodies and continuation lines are skipped.
+unscoped_statement() {
+  local line body name in_function=0 continued=0
+  local assign='^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][][A-Za-z0-9_.:${}/-]*)[[:space:]]*(\?\?=|\?=|:=|\+=|\.=|=\+|=\.|=)'
+  local function_header='^[[:space:]]*(python[[:space:]]+|fakeroot[[:space:]]+)*([A-Za-z_][A-Za-z0-9_.:${}-]*)[[:space:]]*\(\)[[:space:]]*\{'
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$in_function" = 1 ]; then
+      [[ "$line" =~ ^\}[[:space:]]*$ ]] && in_function=0
+      continue
+    fi
+    if [ "$continued" = 1 ]; then
+      [[ "$line" =~ \\[[:space:]]*$ ]] || continued=0
+      continue
+    fi
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    [[ "$line" =~ \\[[:space:]]*$ ]] && continued=1
+    body="${line%%#*}"
+    if [[ "$body" =~ $function_header ]]; then
+      name="${BASH_REMATCH[2]}"
+      in_function=1
+    elif [[ "$body" =~ $assign ]]; then
+      name="${BASH_REMATCH[2]}"
+    else
+      return 0
+    fi
+    [[ "$name" =~ (^|:)qemux86-64(:|$) ]] || return 0
+  done < "$1"
+  return 1
 }
 
 # The body of one GRUB script function. GRUB declares them as
@@ -269,12 +308,32 @@ grep -qx 'SRC_URI:append:qemux86-64 = " file://atc-watchdog.cfg"' "$KERNEL_APPEN
 
 # The layer owns the RAUC version: atcd drives RAUC, and rauc-native signs
 # the bundles that the device's RAUC reads.
+# Each name must be assigned exactly once: bitbake uses the last assignment,
+# so a second line below the pin replaces it.
+[ "$(grep -cE '^[[:space:]]*ATC_RAUC_VERSION[[:space:]:?+.=]' "$ATC_CONF")" = 1 ] ||
+  fail "atc.inc does not assign ATC_RAUC_VERSION exactly once"
 rauc_version="$(sed -n 's/^ATC_RAUC_VERSION = "\(.*\)"$/\1/p' "$ATC_CONF")"
-[[ "$rauc_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] ||
+[[ "$rauc_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
   fail "atc.inc does not pin ATC_RAUC_VERSION to a release version, it is '$rauc_version'"
 for pkg in rauc rauc-native nativesdk-rauc; do
   grep -qxF "PREFERRED_VERSION_$pkg = \"\${ATC_RAUC_VERSION}\"" "$ATC_CONF" ||
     fail "atc.inc does not pin PREFERRED_VERSION_$pkg to ATC_RAUC_VERSION"
+  n="$(grep -cE "^[[:space:]]*PREFERRED_VERSION_${pkg}[[:space:]:?+.=]" "$ATC_CONF")"
+  [ "$n" = 1 ] ||
+    fail "atc.inc assigns PREFERRED_VERSION_$pkg $n times, and bitbake uses the last one"
+done
+# PREFERRED_VERSION falls back to another recipe when no recipe has that
+# version. The version guard skips every other version, so the build stops.
+if ! grep -qF "raise bb.parse.SkipRecipe(" "$RAUC_VERSION_INC" ||
+  ! grep -qxF "    if pv != want:" "$RAUC_VERSION_INC" ||
+  ! grep -qxF "    want = d.getVar('ATC_RAUC_VERSION')" "$RAUC_VERSION_INC"; then
+  fail "rauc-version-atc.inc does not skip a RAUC recipe whose PV is not ATC_RAUC_VERSION"
+fi
+grep -qx 'require rauc-version-atc.inc' "$RAUC_APPEND" ||
+  fail "rauc-atc.inc does not require rauc-version-atc.inc, so the device's RAUC can fall back to git"
+for f in "${RAUC_NATIVE_APPENDS[@]}"; do
+  grep -qxF "require \${@bb.utils.contains('DISTRO_FEATURES', 'atc', 'rauc-version-atc.inc', '', d)}" "$f" ||
+    fail "$(basename "$f") does not require rauc-version-atc.inc with the atc feature"
 done
 
 # ── The runtime profile ──────────────────────────────────────────────────────
@@ -518,8 +577,8 @@ done
 # Only the GRUB backend's machine gets a changed GRUB or kernel. A line
 # without the machine override changes the recipe for every machine.
 for f in "$GRUB_APPEND" "$KERNEL_APPEND"; do
-  if grep -E '^[A-Za-z_][^ =]* *[:?+.]*=' "$f" | grep -qv ':qemux86-64'; then
-    fail "$(basename "$f") sets a variable without the :qemux86-64 override"
+  if unscoped_statement "$f"; then
+    fail "$(basename "$f") has a statement without the :qemux86-64 override"
   fi
 done
 
