@@ -8,8 +8,8 @@
  * overlay gives the Tegra backend the same rule.
  *
  * The flash tools apply the bootcontrol overlays in the order of
- * TEGRA_BOOTCONTROL_OVERLAYS. conf/layer.conf appends this one last,
- * so its value replaces the default.
+ * TEGRA_BOOTCONTROL_OVERLAYS. conf/distro/include/atc.inc appends this one
+ * last, so its value replaces the default.
  */
 / {
         overlay-name = "L4T Configuration Settings";
