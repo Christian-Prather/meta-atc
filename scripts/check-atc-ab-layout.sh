@@ -361,20 +361,36 @@ grep -qx 'Requires=atcd-store-seed.service' "$ATCD_FILES/atcd.service" ||
   fail "atcd.service does not require atcd-store-seed.service, so a fresh store never starts"
 grep -qE '^After=.*\batcd-store-seed\.service\b' "$ATCD_FILES/atcd.service" ||
   fail "atcd.service can start before atcd-store-seed.service fills the store"
-# The seed is complete only when its last step ran. The unit keys on the done
-# marker, which the script writes after its grants, so a seed that a power cut
-# stops runs again. A key on the atcd link would skip that half-seeded store.
+# The seed is complete only when user atc can run the store's atcd. The unit
+# keys on the done marker. The script writes it last, once, and only after
+# that check. A key on the atcd link would skip a store that a power cut
+# stopped between install-self and the grants.
 grep -qx 'ConditionPathExists=!/var/atc/.atcd-seed-done' "$ATCD_FILES/atcd-store-seed.service" ||
   fail "atcd-store-seed.service does not key on the done marker, so an incomplete seed is never repeated"
 grep -qx 'DONE="$STORE/.atcd-seed-done"' "$ATCD_FILES/atcd-store-seed" ||
   fail "atcd-store-seed writes another done marker than the unit reads"
-last_step="$(grep -vE '^[[:space:]]*(#|$)' "$ATCD_FILES/atcd-store-seed" | grep -vx 'sync' | tail -n 1)"
-[ "$last_step" = 'touch "$DONE"' ] && [ "$(grep -c '"$DONE"' "$ATCD_FILES/atcd-store-seed")" = 1 ] ||
-  fail "atcd-store-seed does not write the done marker as its last step, so an incomplete seed is marked done"
-grep -qx '  touch "$STARTED"' "$ATCD_FILES/atcd-store-seed" ||
-  fail "atcd-store-seed does not mark a seed it starts, so an incomplete seed cannot be resumed"
-grep -qx 'if \[ -e "$STARTED" \]; then' "$ATCD_FILES/atcd-store-seed" ||
-  fail "atcd-store-seed does not resume the grants of an incomplete seed"
+# The last steps, without comments and syncs: the runnable check, its exit
+# lines, then the one write of the done marker.
+seed_tail="$(grep -vE '^[[:space:]]*(#|$)' "$ATCD_FILES/atcd-store-seed" | grep -vx 'sync' | tail -n 5)"
+seed_tail_want='runnable || {
+  echo "atcd-store-seed: user atc cannot run $LINK; the next boot tries again" >&2
+  exit 1
+}
+touch "$DONE"'
+if [ "$seed_tail" != "$seed_tail_want" ] ||
+  [ "$(grep -c 'DONE' "$ATCD_FILES/atcd-store-seed")" != 2 ] ||
+  [ "$(grep -c 'atcd-seed-done' "$ATCD_FILES/atcd-store-seed")" != 1 ]; then
+  fail "atcd-store-seed does not write the done marker once, last, after it checks that atc can run atcd"
+fi
+grep -qxF "  su -s /bin/sh -c \"test -s '\$LINK' && test -x '\$LINK'\" atc" "$ATCD_FILES/atcd-store-seed" ||
+  fail "atcd-store-seed does not check, as user atc, that the store's atcd can run"
+grep -qx 'if \[ ! -s "$LINK" \]; then' "$ATCD_FILES/atcd-store-seed" ||
+  fail "atcd-store-seed does not keep a store that already has an atcd binary"
+if ! grep -qx 'if ! runnable; then' "$ATCD_FILES/atcd-store-seed" ||
+  ! grep -qx '  chown -R atc:atc "$STORE"' "$ATCD_FILES/atcd-store-seed" ||
+  ! grep -qx '      \[ -L "$d" \] || chmod g+x "$d"' "$ATCD_FILES/atcd-store-seed"; then
+  fail "atcd-store-seed does not repeat the grants on a store that atc cannot run"
+fi
 # The unit names the script by the path the recipe installs it to.
 grep -qx 'ExecStart=@LIBEXECDIR@/atcd/atcd-store-seed' "$ATCD_FILES/atcd-store-seed.service" ||
   fail "atcd-store-seed.service does not run @LIBEXECDIR@/atcd/atcd-store-seed"
