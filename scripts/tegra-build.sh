@@ -149,7 +149,7 @@ check_image() {
 }
 
 # Check one tegraflash archive: it exists, and one flash layout names both
-# rootfs partitions of the redundant layout, APP and APP_b (conf/layer.conf). A machine that boots from NVMe carries the rootfs in
+# rootfs partitions of the redundant layout, APP and APP_b (conf/distro/include/atc.inc). A machine that boots from NVMe carries the rootfs in
 # external-flash.xml.in, and flash.xml.in describes the QSPI only. $1 is the
 # archive.
 check_archive() {
