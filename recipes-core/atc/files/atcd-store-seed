@@ -9,8 +9,9 @@
 # open. Each step below is safe to repeat:
 #   - install-self runs only when the link gives no binary, so a bootstrapped
 #     or self-updated atcd is kept;
-#   - the grants run only when atc cannot run the binary, so a healthy store
-#     is not changed.
+#   - the grants run on every run, because a power cut can stop them part way
+#     and no cheap test sees which files they did not reach. On a healthy
+#     store they change nothing: `atc bootstrap` makes the same grants.
 # A run that cannot make the store runnable exits non-zero and writes no
 # marker, so the next boot tries again.
 set -eu
@@ -30,20 +31,18 @@ if [ ! -s "$LINK" ]; then
   "$SEED" install-self --from "$SEED" --store-root "$STORE"
 fi
 
-if ! runnable; then
-  chown -R atc:atc "$STORE"
-  # atcd's service user reaches the binary through group traverse on each
-  # directory of the path, the same grant `atc bootstrap` makes.
-  target="$(readlink -f "$LINK")"
-  for p in "$target" "$LINK"; do
-    d="$(dirname "$p")"
-    while [ "$d" != "$STORE" ] && [ "$d" != / ]; do
-      [ -L "$d" ] || chmod g+x "$d"
-      d="$(dirname "$d")"
-    done
+chown -R atc:atc "$STORE"
+# atcd's service user reaches the binary through group traverse on each
+# directory of the path, the same grant `atc bootstrap` makes.
+target="$(readlink -f "$LINK")"
+for p in "$target" "$LINK"; do
+  d="$(dirname "$p")"
+  while [ "$d" != "$STORE" ] && [ "$d" != / ]; do
+    [ -L "$d" ] || chmod g+x "$d"
+    d="$(dirname "$d")"
   done
-  chmod g+x "$STORE"
-fi
+done
+chmod g+x "$STORE"
 
 # The hook log directory, as `atc bootstrap` makes it for the atc-hooks user.
 [ -d "$STORE/logs/hooks" ] || install -d -o atc -g atc -m 0750 "$STORE/logs" "$STORE/logs/hooks"
