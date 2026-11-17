@@ -1,31 +1,37 @@
 #!/bin/sh
 # Seed the atcd store at /var/atc with the image's atcd. atcd-store-seed.service
-# runs it as root until the store holds the done marker.
+# runs it as root on each boot until the store holds the done marker.
 #
-# The store has three states, and the markers tell them apart:
-#   no atcd binary           an empty store: write the started marker, seed it
-#   link and started marker  a seed that a power cut or an error stopped:
-#                            repeat the grants, which are safe to repeat
-#   link, no started marker  a store that `atc bootstrap` filled: change nothing
-# Each path ends with the done marker, written last. The unit skips a store
-# that has it, so a seed that stops before the end runs again on the next boot.
+# The done marker means "user atc can run the store's atcd". The script writes
+# it last, and only after it checks that as user atc. A link alone proves
+# nothing: install-self writes the link before the grants, and a power cut
+# between them, here or in `atc bootstrap`, leaves a store that atc cannot
+# open. Each step below is safe to repeat:
+#   - install-self runs only when the link gives no binary, so a bootstrapped
+#     or self-updated atcd is kept;
+#   - the grants run only when atc cannot run the binary, so a healthy store
+#     is not changed.
+# A run that cannot make the store runnable exits non-zero and writes no
+# marker, so the next boot tries again.
 set -eu
 
 STORE=/var/atc
 SEED=/usr/bin/atcd
 LINK="$STORE/channel/agency/atcd/delivery/current/atcd/atcd"
-STARTED="$STORE/.atcd-seed-started"
 DONE="$STORE/.atcd-seed-done"
 
-if [ ! -e "$LINK" ]; then
-  touch "$STARTED"
-  sync
+# Succeed when user atc can run the store's atcd. The store path holds no
+# quote or space, so it is safe inside the command string.
+runnable() {
+  su -s /bin/sh -c "test -s '$LINK' && test -x '$LINK'" atc
+}
+
+if [ ! -s "$LINK" ]; then
   "$SEED" install-self --from "$SEED" --store-root "$STORE"
 fi
 
-if [ -e "$STARTED" ]; then
+if ! runnable; then
   chown -R atc:atc "$STORE"
-
   # atcd's service user reaches the binary through group traverse on each
   # directory of the path, the same grant `atc bootstrap` makes.
   target="$(readlink -f "$LINK")"
@@ -37,11 +43,15 @@ if [ -e "$STARTED" ]; then
     done
   done
   chmod g+x "$STORE"
-
-  # The hook log directory, as `atc bootstrap` makes it for the atc-hooks user.
-  install -d -o atc -g atc -m 0750 "$STORE/logs" "$STORE/logs/hooks"
 fi
 
+# The hook log directory, as `atc bootstrap` makes it for the atc-hooks user.
+[ -d "$STORE/logs/hooks" ] || install -d -o atc -g atc -m 0750 "$STORE/logs" "$STORE/logs/hooks"
+
+runnable || {
+  echo "atcd-store-seed: user atc cannot run $LINK; the next boot tries again" >&2
+  exit 1
+}
 sync
 touch "$DONE"
 sync

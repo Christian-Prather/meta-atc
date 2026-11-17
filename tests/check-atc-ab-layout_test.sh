@@ -175,10 +175,21 @@ mutate "a seed keyed on the atcd link is caught" "$SEED_UNIT_REL" \
 mutate "a done marker the unit does not read is caught" "$SEED_REL" \
   's#^DONE="$STORE/.atcd-seed-done"#DONE="$STORE/.seeded"#' "another done marker"
 mutate "a done marker before the grants is caught" "$SEED_REL" \
-  '/^if \[ -e "$STARTED" \]; then$/i touch "$DONE"' "as its last step"
-mutate "a seed that never marks its start is caught" "$SEED_REL" '/^  touch "$STARTED"$/d' "cannot be resumed"
-mutate "a seed that does not resume the grants is caught" "$SEED_REL" \
-  's/^if \[ -e "$STARTED" \]; then$/if false; then/' "does not resume the grants"
+  '/^if ! runnable; then$/i touch "$DONE"' "once, last"
+mutate "an early literal done marker is caught" "$SEED_REL" \
+  '/^if ! runnable; then$/i touch /var/atc/.atcd-seed-done' "once, last"
+mutate "a done marker without the runnable check is caught" "$SEED_REL" \
+  's/^runnable || {$/true || {/' "once, last"
+mutate "a done marker after a failed check is caught" "$SEED_REL" \
+  's/^  exit 1$/  true/' "once, last"
+mutate "a runnable check as root is caught" "$SEED_REL" \
+  "s/^  su -s \\/bin\\/sh -c \(.*\) atc$/  sh -c \\1/" "as user atc"
+mutate "a seed that replaces an existing atcd is caught" "$SEED_REL" \
+  's/^if \[ ! -s "$LINK" \]; then$/if true; then/' "already has an atcd binary"
+mutate "a seed that does not repeat the grants is caught" "$SEED_REL" \
+  's/^if ! runnable; then$/if false; then/' "does not repeat the grants"
+mutate "a seed with no chown is caught" "$SEED_REL" '/^  chown -R atc:atc/d' "does not repeat the grants"
+mutate "a seed with no traverse grant is caught" "$SEED_REL" '/chmod g+x "$d"$/d' "does not repeat the grants"
 mutate "a seed unit at a fixed libexec path is caught" "$SEED_UNIT_REL" \
   's#^ExecStart=@LIBEXECDIR@/#ExecStart=/usr/libexec/#' "does not run @LIBEXECDIR@"
 mutate "a seed unit the recipe never fills in is caught" "$ATCD_RECIPE_REL" \
