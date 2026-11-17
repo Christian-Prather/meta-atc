@@ -190,6 +190,12 @@ mutate "a chown only when atc can run atcd is caught" "$SEED_REL" \
   's/^chown -R atc:atc "$STORE"$/if runnable; then\n  chown -R atc:atc "$STORE"\nfi/' "does not repeat the grants"
 mutate "a seed with no chown is caught" "$SEED_REL" '/^chown -R atc:atc/d' "does not repeat the grants"
 mutate "a seed with no traverse grant is caught" "$SEED_REL" '/chmod g+x "$d"$/d' "does not repeat the grants"
+mutate "a grant block in an unindented branch is caught" "$SEED_REL" \
+  's/^chown -R atc:atc "$STORE"$/if ! runnable; then\nchown -R atc:atc "$STORE"/; s/^chmod g+x "$STORE"$/chmod g+x "$STORE"\nfi/' \
+  "does not repeat the grants"
+mutate "grants above install-self behind an earlier fi are caught" "$SEED_REL" \
+  '/^chown -R atc:atc "$STORE"$/d; /^if \[ ! -s "$LINK" \]; then$/i if true; then :\nfi\nchown -R atc:atc "$STORE"' \
+  "does not repeat the grants"
 mutate "a chown after the check is caught" "$SEED_REL" \
   '/^chown -R atc:atc "$STORE"$/d; /^touch "$DONE"$/i chown -R atc:atc "$STORE"' "does not repeat the grants"
 mutate "a seed unit at a fixed libexec path is caught" "$SEED_UNIT_REL" \
