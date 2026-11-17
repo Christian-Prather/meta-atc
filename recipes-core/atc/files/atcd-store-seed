@@ -1,0 +1,27 @@
+#!/bin/sh
+# Seed the atcd store at /var/atc with the image's atcd. atcd-store-seed.service
+# runs it as root, once per store. Every step is safe to repeat, so a power cut
+# in the middle leaves a store that the next boot completes.
+set -eu
+
+STORE=/var/atc
+SEED=/usr/bin/atcd
+LINK="$STORE/channel/agency/atcd/delivery/current/atcd/atcd"
+
+"$SEED" install-self --from "$SEED" --store-root "$STORE"
+chown -R atc:atc "$STORE"
+
+# atcd's service user reaches the binary through group traverse on each
+# directory of the path, the same grant `atc bootstrap` makes.
+target="$(readlink -f "$LINK")"
+for p in "$target" "$LINK"; do
+  d="$(dirname "$p")"
+  while [ "$d" != "$STORE" ] && [ "$d" != / ]; do
+    [ -L "$d" ] || chmod g+x "$d"
+    d="$(dirname "$d")"
+  done
+done
+chmod g+x "$STORE"
+
+# The hook log directory, as `atc bootstrap` makes it for the atc-hooks user.
+install -d -o atc -g atc -m 0750 "$STORE/logs" "$STORE/logs/hooks"

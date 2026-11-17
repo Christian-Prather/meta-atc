@@ -4,8 +4,8 @@
 # require this file. A slot that lacks any line here boots and then cannot
 # confirm, so every update to it reverts.
 #
-# atcd.service is NOT here. `atc bootstrap atcd install` renders it per device,
-# so the bundle's post-install hook copies it into the new slot instead.
+# atcd.service and the atc and atc-hooks users come from the atcd package,
+# which atc-image.bb installs, so both slots carry the same ones.
 
 # The slot backend decides what writes the boot state. A line that differs by
 # backend carries `:atc-slot-grub` or `:atc-slot-nvbootctrl`.
@@ -50,25 +50,6 @@ python () {
                                   "the build configuration"
                                   % (d.getVar('USE_REDUNDANT_FLASH_LAYOUT') or ''))
 }
-
-# Users atc and atc-hooks with FIXED ids, in both slots.
-#
-# The store on /var/atc survives a slot switch, and its files carry numeric
-# owners. Two slots that allocated the ids in a different order would hand the
-# store to the wrong user after an update. `atc bootstrap` creates these users
-# only when they do not exist, so it adopts these.
-#
-# `:prepend`, and the order matters. atc-image.bb runs `groupadd -f atc` for the
-# deploy user's group. That line must find the group already created here, with
-# the fixed id, or the group gets the next free id instead.
-ATC_GID ?= "2000"
-ATC_UID ?= "2000"
-ATC_HOOKS_UID ?= "2001"
-EXTRA_USERS_PARAMS:prepend = "\
-    groupadd -g ${ATC_GID} atc; \
-    useradd --system -u ${ATC_UID} -g atc --home-dir /var/atc --no-create-home --shell /usr/sbin/nologin atc; \
-    useradd --system -u ${ATC_HOOKS_UID} -g atc -G atc --create-home --home-dir /var/lib/atc-hooks --shell /usr/sbin/nologin atc-hooks; \
-    "
 
 # EVERY non-root mount, by PARTLABEL, written here and nowhere else.
 #
