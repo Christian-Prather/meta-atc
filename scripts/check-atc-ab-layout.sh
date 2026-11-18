@@ -103,7 +103,7 @@ for f in "$WKS" "$GRUB_CFG" "$RECIPE" "$GRUB_APPEND" "$SYSTEM_CONF" "$TEGRA_CONF
   "$RAUC_APPEND" "$BUNDLE" "$RUNTIME" "$IMAGE" "$SLOT_IMAGE" \
   "$OS_DIR/atc-os-trial-deadline" "$OS_DIR/atc-os-trial-deadline.timer" \
   "$OS_DIR/atc-os-reboot.path" "$OS_DIR/atc-os-reboot.service" \
-  "$OS_DIR/10-atc-store.conf" "$KERNEL_APPEND" "$WATCHDOG_CFG" "$ATC_CONF" "$HOOK"; do
+  "$OS_DIR/10-atc-store.conf" "$OS_DIR/10-atc-boot.conf" "$KERNEL_APPEND" "$WATCHDOG_CFG" "$ATC_CONF" "$HOOK"; do
   if [ ! -f "$f" ]; then
     echo "FAIL: missing $f" >&2
     exit 1
@@ -247,8 +247,8 @@ if [ -z "$rm_at" ] || [ -z "$reboot_at" ] || [ "$rm_at" -gt "$reboot_at" ]; then
     "the next boot reboots again"
 fi
 
-# atcd's binary and its store are under /var/atc, the data partition. On the
-# nvbootctrl backend that mount is nofail, so a slow or missing UDA does not
+# atcd's binary and its store are under /var/atc, the data partition. On both
+# backends that mount is nofail, so a slow, missing or damaged store does not
 # stop the boot. Without this drop-in, atcd.service then starts against an
 # empty /var/atc on the rootfs and fails. The Rust bootstrap renders
 # atcd.service, so the image orders it with a drop-in in /usr/lib, which the
@@ -261,6 +261,20 @@ grep -qF 'file://10-atc-store.conf' "$OS_RECIPE" ||
   fail "atc-os does not fetch the atcd store drop-in"
 grep -qxF '    install -m 0644 ${WORKDIR}/10-atc-store.conf ${D}${systemd_system_unitdir}/atcd.service.d/' "$OS_RECIPE" ||
   fail "atc-os does not install the atcd store drop-in in atcd.service.d"
+
+# RAUC's GRUB backend reads and writes the grubenv on the ESP, and the ESP
+# mount is nofail on that backend. Without this drop-in, rauc.service starts
+# against the empty /boot on the rootfs. It installs on atc-slot-grub only:
+# the nvbootctrl backend mounts no /boot.
+if ! grep -qx '\[Unit\]' "$OS_DIR/10-atc-boot.conf" ||
+  ! grep -qx 'RequiresMountsFor=/boot' "$OS_DIR/10-atc-boot.conf"; then
+  fail "the RAUC drop-in does not require the /boot mount (RequiresMountsFor=/boot in [Unit])"
+fi
+grep -qx 'SRC_URI:append:atc-slot-grub = " file://10-atc-boot.conf"' "$OS_RECIPE" ||
+  fail "atc-os does not fetch the RAUC boot drop-in on atc-slot-grub"
+grep -qxF '    install -m 0644 ${WORKDIR}/10-atc-boot.conf ${D}${systemd_system_unitdir}/rauc.service.d/' \
+  < <(sed -n '/^do_install:append:atc-slot-grub() {$/,/^}$/p' "$OS_RECIPE") ||
+  fail "atc-os does not install the RAUC boot drop-in in rauc.service.d on atc-slot-grub"
 
 # The watchdog the drop-in feeds. poky's qemux86-64 kernel does not build the
 # i6300esb driver, so without the fragment RuntimeWatchdogSec arms nothing.
@@ -301,6 +315,21 @@ fi
 grep -q '^PARTLABEL=UDA  */var/atc  *ext4  *[^ ]*\bnofail\b' <<< "$nv_fstab" ||
   fail "the Tegra UDA mount has no nofail, so a UDA that cannot mount drops both" \
     "slots into emergency mode, with no network"
+# The GRUB mounts are nofail for the same reason: both slots share the ESP and
+# the store, so one that cannot mount must not stop the boot in emergency mode.
+for label in atcesp atcdata; do
+  opts="$(awk -v l="PARTLABEL=$label" '$1 == l { print $4 }' <<< "$grub_fstab")"
+  case ",$opts," in
+    *,nofail,*) ;;
+    *) fail "the GRUB $label mount has no nofail, so a $label that cannot mount" \
+      "drops both slots into emergency mode, with no network" ;;
+  esac
+  case ",$opts," in
+    *,x-systemd.device-timeout=*) ;;
+    *) fail "the GRUB $label mount has no x-systemd.device-timeout, so a missing" \
+      "$label holds the boot for the 90 s default" ;;
+  esac
+done
 for want in 'DATAFILE:atc-slot-nvbootctrl = "atc-uda.img"' \
   'IMAGE_TEGRAFLASH_DATA:atc-slot-nvbootctrl = "${DEPLOY_DIR_IMAGE}/atc-uda.ext4"'; do
   grep -qxF -- "$want" "$RUNTIME" ||
