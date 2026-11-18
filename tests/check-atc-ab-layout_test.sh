@@ -54,6 +54,7 @@ PATH_REL="recipes-core/atc-os/files/atc-os-reboot.path"
 REBOOT_REL="recipes-core/atc-os/files/atc-os-reboot.service"
 WATCHDOG_REL="recipes-core/atc-os/files/10-atc-watchdog.conf"
 STORE_DROPIN_REL="recipes-core/atc-os/files/10-atc-store.conf"
+BOOT_DROPIN_REL="recipes-core/atc-os/files/10-atc-boot.conf"
 KERNEL_REL="recipes-kernel/linux/linux-yocto-atc.inc"
 WDT_CFG_REL="recipes-kernel/linux/files/atc-watchdog.cfg"
 ATC_CONF_REL="conf/distro/include/atc.inc"
@@ -65,7 +66,8 @@ ALL_REL=("$WKS_REL" "$CFG_REL" "$RECIPE_REL" "$GRUB_APPEND_REL" "$CONF_REL"
   "$WATCHDOG_REL" "$KERNEL_REL" "$WDT_CFG_REL" "$TEGRA_CONF_REL"
   "$RAUC_CONF_APPEND_REL" "$OS_RECIPE_REL" "$SEAM_REL" "$PRE_INSTALL_REL"
   "$SLOT_TRIAL_REL" "$ATC_CONF_REL" "$HOOK_REL" "$STORE_DROPIN_REL"
-  "$SEAM_MAP_REL" "$RAUC_CONF_BBAPPEND_REL" "$RAUC_BBAPPEND_REL" "$GRUB_BBAPPEND_REL")
+  "$SEAM_MAP_REL" "$RAUC_CONF_BBAPPEND_REL" "$RAUC_BBAPPEND_REL" "$GRUB_BBAPPEND_REL"
+  "$BOOT_DROPIN_REL")
 
 make_fixture() {
   local root="$1" rel
@@ -176,6 +178,12 @@ mutate "a reboot before the request is removed is caught" "$REBOOT_REL" '/^ExecS
 
 # The atcd drop-in that waits for the store mount.
 mutate "an atcd drop-in without RequiresMountsFor is caught" "$STORE_DROPIN_REL" '/^RequiresMountsFor=\/var\/atc$/d' "RequiresMountsFor=/var/atc"
+mutate "a RAUC drop-in without RequiresMountsFor is caught" "$BOOT_DROPIN_REL" '/^RequiresMountsFor=\/boot$/d' "RequiresMountsFor=/boot"
+mutate "a RAUC drop-in fetched on no backend is caught" "$OS_RECIPE_REL" \
+  '/file:\/\/10-atc-boot\.conf"$/d' "does not fetch the RAUC boot drop-in"
+mutate "a RAUC drop-in installed on every backend is caught" "$OS_RECIPE_REL" \
+  '/install -m 0644 ${WORKDIR}\/10-atc-boot\.conf/d; /^do_install() {$/a\    install -m 0644 ${WORKDIR}/10-atc-boot.conf ${D}${systemd_system_unitdir}/rauc.service.d/' \
+  "does not install the RAUC boot drop-in in rauc.service.d on atc-slot-grub"
 mutate "an atcd drop-in installed for another unit is caught" "$OS_RECIPE_REL" 's#/atcd.service.d/#/atcd-old.service.d/#' "install the atcd store drop-in"
 mutate "an atcd drop-in the recipe never fetches is caught" "$OS_RECIPE_REL" '/file:\/\/10-atc-store.conf/d' "fetch the atcd store drop-in"
 
@@ -356,6 +364,14 @@ mutate "a UDA mount for every backend is caught" "$RUNTIME_REL" \
   's/^atc_install_fstab_entries:atc-slot-nvbootctrl() {$/atc_install_fstab_entries:other() {/' "no PARTLABEL=UDA on /var/atc"
 mutate "a UDA mount without nofail is caught" "$RUNTIME_REL" \
   's/defaults,nofail,/defaults,/' "has no nofail"
+mutate "a GRUB store mount without nofail is caught" "$RUNTIME_REL" \
+  '/^PARTLABEL=atcdata /s/defaults,nofail,/defaults,/' "GRUB atcdata mount has no nofail"
+mutate "a GRUB ESP mount without nofail is caught" "$RUNTIME_REL" \
+  '/^PARTLABEL=atcesp /s/defaults,nofail,/defaults,/' "GRUB atcesp mount has no nofail"
+mutate "a GRUB store mount without a device timeout is caught" "$RUNTIME_REL" \
+  '/^PARTLABEL=atcdata /s/,x-systemd\.device-timeout=30s//' "GRUB atcdata mount has no x-systemd.device-timeout"
+mutate "a GRUB ESP mount without a device timeout is caught" "$RUNTIME_REL" \
+  '/^PARTLABEL=atcesp /s/,x-systemd\.device-timeout=30s//' "GRUB atcesp mount has no x-systemd.device-timeout"
 mutate "a Tegra image that does not flash UDA is caught" "$RUNTIME_REL" \
   '/^IMAGE_TEGRAFLASH_DATA:atc-slot-nvbootctrl /d' "does not flash atc-uda.ext4"
 mutate "a second ext4 member in the archive is caught" "$RUNTIME_REL" \

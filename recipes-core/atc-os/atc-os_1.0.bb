@@ -27,6 +27,8 @@ S = "${WORKDIR}"
 # differs by backend.
 inherit atc-slot-backend
 SRC_URI:append:atc-slot-grub = " file://atc-slot-trial-grub"
+# The RAUC drop-in that waits for the ESP, which only this backend mounts.
+SRC_URI:append:atc-slot-grub = " file://10-atc-boot.conf"
 
 inherit systemd
 
@@ -71,4 +73,9 @@ RDEPENDS:${PN}:append:atc-slot-nvbootctrl = " atc-nvbootctrl"
 
 do_install:append:atc-slot-grub() {
     install -m 0755 ${WORKDIR}/atc-slot-trial-grub ${D}${libexecdir}/atc-os/atc-slot-trial
+
+    # RAUC waits for the ESP mount, which is nofail on this backend
+    # (atc-ab-runtime.inc). In /usr/lib for the same reason as the atcd drop-in.
+    install -d ${D}${systemd_system_unitdir}/rauc.service.d
+    install -m 0644 ${WORKDIR}/10-atc-boot.conf ${D}${systemd_system_unitdir}/rauc.service.d/
 }

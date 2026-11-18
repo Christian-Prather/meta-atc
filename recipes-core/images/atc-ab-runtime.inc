@@ -91,10 +91,26 @@ atc_install_fstab_entries() {
 #
 # The ESP on /boot is where RAUC's `grubenv=/boot/atc/grubenv` points. An
 # unmounted ESP leaves RAUC unable to read or mark any slot.
+#
+# nofail on both, for the reason the nvbootctrl branch below gives: both slots
+# share each partition, so a revert does not help, and emergency mode has no
+# network. A store that cannot mount gives a board without its store: the atcd
+# drop-in (10-atc-store.conf) holds atcd off the empty mount point, and an
+# operator can still reach the board over ssh.
+#
+# The ESP is nofail too. Emergency mode loses every slot and the network. A
+# boot without the ESP loses only the boot state: the RAUC drop-in
+# (10-atc-boot.conf) holds rauc.service off the empty mount point, so atcd
+# cannot mark a slot and the trial deadline cannot read one, and each says so
+# in the journal. GRUB reads the ESP itself before Linux starts, so the next
+# reboot, from an operator or the watchdog, still reverts a trial that nothing
+# marked good.
+#
+# The device timeout keeps the wait for a missing partition short.
 atc_install_fstab_entries:atc-slot-grub() {
     cat >> ${IMAGE_ROOTFS}${sysconfdir}/fstab << EOF
-PARTLABEL=atcesp   /boot     vfat  defaults  0  2
-PARTLABEL=atcdata  /var/atc  ext4  defaults  0  2
+PARTLABEL=atcesp   /boot     vfat  defaults,nofail,x-systemd.device-timeout=30s  0  2
+PARTLABEL=atcdata  /var/atc  ext4  defaults,nofail,x-systemd.device-timeout=30s  0  2
 EOF
 }
 
