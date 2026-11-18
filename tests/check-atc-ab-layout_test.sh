@@ -35,6 +35,10 @@ CONF_REL="recipes-core/rauc/files/system.conf"
 TEGRA_CONF_REL="recipes-core/rauc/files/system-nvbootctrl.conf"
 OS_RECIPE_REL="recipes-core/atc-os/atc-os_1.0.bb"
 SEAM_REL="classes/atc-slot-backend.bbclass"
+SEAM_MAP_REL="classes/atc-slot-backend-map.bbclass"
+RAUC_CONF_BBAPPEND_REL="recipes-core/rauc/rauc-conf.bbappend"
+RAUC_BBAPPEND_REL="recipes-core/rauc/rauc_%.bbappend"
+GRUB_BBAPPEND_REL="recipes-bsp/grub/grub-efi_%.bbappend"
 PRE_INSTALL_REL="recipes-core/atc-os/files/atc-os-pre-install"
 SLOT_TRIAL_REL="recipes-core/atc-os/files/atc-slot-trial-grub"
 RAUC_CONF_APPEND_REL="recipes-core/rauc/rauc-conf-atc.inc"
@@ -60,7 +64,8 @@ ALL_REL=("$WKS_REL" "$CFG_REL" "$RECIPE_REL" "$GRUB_APPEND_REL" "$CONF_REL"
   "$SLOT_REL" "$DEADLINE_REL" "$TIMER_REL" "$PATH_REL" "$REBOOT_REL"
   "$WATCHDOG_REL" "$KERNEL_REL" "$WDT_CFG_REL" "$TEGRA_CONF_REL"
   "$RAUC_CONF_APPEND_REL" "$OS_RECIPE_REL" "$SEAM_REL" "$PRE_INSTALL_REL"
-  "$SLOT_TRIAL_REL" "$ATC_CONF_REL" "$HOOK_REL" "$STORE_DROPIN_REL")
+  "$SLOT_TRIAL_REL" "$ATC_CONF_REL" "$HOOK_REL" "$STORE_DROPIN_REL"
+  "$SEAM_MAP_REL" "$RAUC_CONF_BBAPPEND_REL" "$RAUC_BBAPPEND_REL" "$GRUB_BBAPPEND_REL")
 
 make_fixture() {
   local root="$1" rel
@@ -262,10 +267,29 @@ mutate "a COMPATIBLE_MACHINE this config cannot boot is caught" "$RECIPE_REL" \
 
 # The slot backend seam: the GRUB contract stays on atc-slot-grub, and the
 # nvbootctrl backend keeps none of it.
-mutate "a seam without the grub default is caught" "$SEAM_REL" \
-  's/^ATC_SLOT_BACKEND ??= "grub"$/ATC_SLOT_BACKEND ??= "nvbootctrl"/' "default ATC_SLOT_BACKEND to grub"
+# Every machine outside the map gets `none`: no A/B recipes, and the RAUC
+# recipes of other layers untouched.
+mutate "a map that defaults to grub is caught" "$SEAM_MAP_REL" \
+  's/^ATC_SLOT_BACKEND ??= "none"$/ATC_SLOT_BACKEND ??= "grub"/' "default ATC_SLOT_BACKEND to none"
+mutate "a map without the qemux86-64 value is caught" "$SEAM_MAP_REL" '/^ATC_SLOT_BACKEND:qemux86-64/d' "grub on qemux86-64"
+mutate "a map without the tegra234 value is caught" "$SEAM_MAP_REL" '/^ATC_SLOT_BACKEND:tegra234/d' "nvbootctrl on tegra234"
+mutate "a backend set in a recipe is caught" "$IMAGE_REL" \
+  's/^inherit atc-slot-backend$/ATC_SLOT_BACKEND:qemuarm64 = "grub"\n&/' "set outside atc-slot-backend-map"
+mutate "a seam that does not read the map is caught" "$SEAM_REL" '/^inherit atc-slot-backend-map$/d' "does not inherit atc-slot-backend-map"
 mutate "a seam that never derives the override is caught" "$SEAM_REL" '/^OVERRIDES /d' "derive the atc-slot"
-mutate "a seam without the tegra234 value is caught" "$SEAM_REL" '/^ATC_SLOT_BACKEND:tegra234/d' "nvbootctrl on tegra234"
+mutate "a seam that builds its recipes on none is caught" "$SEAM_REL" \
+  "s/^    if d.getVar('ATC_SLOT_BACKEND') == 'none':\$/    if False:/" "skip its recipes on ATC_SLOT_BACKEND none"
+mutate "a rauc-conf replaced on none is caught" "$RAUC_CONF_BBAPPEND_REL" \
+  "s/^require .*/require \${@bb.utils.contains('DISTRO_FEATURES', 'atc', 'rauc-conf-atc.inc', '', d)}/" \
+  "applies rauc-conf-atc.inc on ATC_SLOT_BACKEND none"
+mutate "a rauc changed on none is caught" "$RAUC_BBAPPEND_REL" \
+  "s/ != 'none' else/ != 'grub' else/" "applies rauc-atc.inc on ATC_SLOT_BACKEND none"
+mutate "a GRUB built-in change off the GRUB backend is caught" "$GRUB_BBAPPEND_REL" \
+  "s/ == 'grub' else/ != 'none' else/" "off the GRUB backend"
+mutate "a rauc-conf bbappend that does not read the map is caught" "$RAUC_CONF_BBAPPEND_REL" \
+  '/^inherit /d' "does not read the backend map"
+mutate "a rauc-conf bbappend on the full seam is caught" "$RAUC_CONF_BBAPPEND_REL" \
+  's/^inherit .*/&\ninherit atc-slot-backend/' "skips or re-arches"
 mutate "a runtime profile off the seam is caught" "$RUNTIME_REL" '/^inherit atc-slot-backend$/d' "does not inherit atc-slot-backend"
 mutate "a grub-editenv for every backend is caught" "$RUNTIME_REL" \
   's/^IMAGE_INSTALL += "rauc rauc-conf atc-os"$/IMAGE_INSTALL += "rauc rauc-conf grub-editenv atc-os"/; /^IMAGE_INSTALL:append:atc-slot-grub = /d' \

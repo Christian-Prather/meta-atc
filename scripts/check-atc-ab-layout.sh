@@ -42,6 +42,10 @@ TEGRA_CONF="$L/recipes-core/rauc/files/system-nvbootctrl.conf"
 RAUC_CONF_APPEND="$L/recipes-core/rauc/rauc-conf-atc.inc"
 OS_RECIPE="$L/recipes-core/atc-os/atc-os_1.0.bb"
 SEAM="$L/classes/atc-slot-backend.bbclass"
+SEAM_MAP="$L/classes/atc-slot-backend-map.bbclass"
+RAUC_CONF_BBAPPEND="$L/recipes-core/rauc/rauc-conf.bbappend"
+RAUC_BBAPPEND="$L/recipes-core/rauc/rauc_%.bbappend"
+GRUB_BBAPPEND="$L/recipes-bsp/grub/grub-efi_%.bbappend"
 POLICY="$L/recipes-core/rauc/files/atc-rauc.conf"
 RAUC_APPEND="$L/recipes-core/rauc/rauc-atc.inc"
 BUNDLE="$L/recipes-core/bundles/atc-bundle.bb"
@@ -553,15 +557,55 @@ fi
 
 # ── The slot backend seam ────────────────────────────────────────────────────
 #
-# The seam is one variable and one derived override. The GRUB backend is the
-# default, so every machine without its own value keeps today's contract.
+# The seam is one variable and one derived override. The map names the
+# machines with a backend. Every other machine gets `none`: no A/B update
+# path, and no change to the RAUC recipes a product BSP brings.
 
-grep -qx 'ATC_SLOT_BACKEND ??= "grub"' "$SEAM" ||
-  fail "atc-slot-backend.bbclass does not default ATC_SLOT_BACKEND to grub"
-grep -qx 'ATC_SLOT_BACKEND:tegra234 ??= "nvbootctrl"' "$SEAM" ||
-  fail "atc-slot-backend.bbclass does not select nvbootctrl on tegra234"
+grep -qx 'ATC_SLOT_BACKEND ??= "none"' "$SEAM_MAP" ||
+  fail "atc-slot-backend-map.bbclass does not default ATC_SLOT_BACKEND to none," \
+    "so a machine without a backend gets the qemux86-64 RAUC configuration"
+grep -qx 'ATC_SLOT_BACKEND:qemux86-64 ??= "grub"' "$SEAM_MAP" ||
+  fail "atc-slot-backend-map.bbclass does not select grub on qemux86-64"
+grep -qx 'ATC_SLOT_BACKEND:tegra234 ??= "nvbootctrl"' "$SEAM_MAP" ||
+  fail "atc-slot-backend-map.bbclass does not select nvbootctrl on tegra234"
+# The map is the one place a machine gets its backend. A value set in a recipe
+# would key that recipe on a machine name, and the others would disagree.
+stray_map="$(grep -rlE '^[[:space:]]*ATC_SLOT_BACKEND(:[A-Za-z0-9_-]+)*[[:space:]]*(\?\?=|\?=|:=|\+=|=)' \
+  --include='*.bb' --include='*.bbappend' --include='*.inc' --include='*.bbclass' --include='*.conf' \
+  "$L" | grep -vxF "$SEAM_MAP")"
+[ -z "$stray_map" ] ||
+  fail "ATC_SLOT_BACKEND is set outside atc-slot-backend-map.bbclass:" "$stray_map"
+grep -qx 'inherit atc-slot-backend-map' "$SEAM" ||
+  fail "atc-slot-backend.bbclass does not inherit atc-slot-backend-map, so no recipe has a backend"
 grep -qxF 'OVERRIDES .= ":atc-slot-${ATC_SLOT_BACKEND}"' "$SEAM" ||
   fail "atc-slot-backend.bbclass does not derive the atc-slot-<backend> override"
+# Every recipe that inherits the class differs by backend, so on `none` the
+# class skips it. Without the skip, atc-image-ab fails on "nothing provides
+# atc-grub-env" instead of naming the missing backend.
+if ! grep -qF "if d.getVar('ATC_SLOT_BACKEND') == 'none':" "$SEAM" ||
+  ! grep -qF 'raise bb.parse.SkipRecipe(' "$SEAM"; then
+  fail "atc-slot-backend.bbclass does not skip its recipes on ATC_SLOT_BACKEND none"
+fi
+
+# The bbappends to other layers' RAUC and GRUB apply only with a backend. On
+# `none` a product's own rauc-conf must build untouched. They read the map
+# only: the full class would make the product's package machine-specific.
+map_inherit="inherit \${@bb.utils.contains('DISTRO_FEATURES', 'atc', 'atc-slot-backend-map', '', d)}"
+for f in "$RAUC_CONF_BBAPPEND" "$RAUC_BBAPPEND" "$GRUB_BBAPPEND"; do
+  grep -qxF "$map_inherit" "$f" ||
+    fail "$(basename "$f") does not read the backend map with the atc distro feature"
+  if grep -qxE 'inherit (.* )?atc-slot-backend( .*)?' "$f"; then
+    fail "$(basename "$f") inherits atc-slot-backend, which skips or re-arches another layer's recipe"
+  fi
+done
+for pair in "$RAUC_CONF_BBAPPEND:rauc-conf-atc.inc" "$RAUC_BBAPPEND:rauc-atc.inc"; do
+  f="${pair%:*}" inc="${pair##*:}"
+  grep -qxF "require \${@'$inc' if (d.getVar('ATC_SLOT_BACKEND') or 'none') != 'none' else ''}" "$f" ||
+    fail "$(basename "$f") applies $inc on ATC_SLOT_BACKEND none, so a product BSP" \
+      "loses its own RAUC configuration"
+done
+grep -qxF "require \${@'grub-efi-atc.inc' if d.getVar('ATC_SLOT_BACKEND') == 'grub' else ''}" "$GRUB_BBAPPEND" ||
+  fail "grub-efi_%.bbappend applies grub-efi-atc.inc off the GRUB backend"
 for f in "$RAUC_CONF_APPEND" "$OS_RECIPE"; do
   grep -qxE 'inherit (.* )?atc-slot-backend( .*)?' "$f" ||
     fail "$(basename "$f") does not inherit atc-slot-backend, so its backend lines never apply"
