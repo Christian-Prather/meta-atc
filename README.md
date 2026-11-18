@@ -109,6 +109,60 @@ works with `BB_NO_NETWORK = "1"`.
 
 For another track, replace `stable` in the URLs and set `ATCD_TRACK` to match.
 
+### Fetch credential
+
+The atcd download can carry a credential. Today the credential is optional:
+the blob server accepts a download without one. The atc maintainers may
+require a credential later. A build with no credential then fails in
+`do_fetch` with an HTTP 401 error.
+
+The credential is a login and a token for HTTP Basic authentication, in a
+netrc file:
+
+```
+machine atc.dev login <organization id> password <token>
+```
+
+Do one of these:
+
+- Put the line in `~/.netrc` of the build user. BitBake's wget fetcher reads
+  that file. No setting is necessary.
+- Put the line in a file named `.netrc` in another directory, for example a
+  secret that your CI mounts. Then set the directory in `local.conf`:
+
+  ```
+  ATCD_NETRC_DIR = "/run/secrets/atc"
+  ```
+
+  The recipe runs wget for the atcd download with `HOME` set to that
+  directory. Other recipes do not see it.
+
+Give the file mode `0600`. Do not commit it.
+
+The token is not in the metadata. It is not in the task signature, sstate,
+the logs or `bitbake -e` output. `ATCD_NETRC_DIR` is not in the task
+signature, so builders with different directories share sstate. Do not put
+the token in `SRC_URI` with `user=` and `pswd=`: those parameters are in all
+of those places. The recipe gate refuses them.
+
+wget sends the login and the token only to the host that the netrc line names.
+It sends them only after the server asks for them with a 401 response. A
+premirror or a mirror gets no credential. A build that finds the binary in
+`DL_DIR` or a premirror needs no credential.
+
+`bitbake -c checkuri atcd` reads `~/.netrc` only. It does not use
+`ATCD_NETRC_DIR`.
+
+The contract that the blob server must keep:
+
+- A `GET` of `https://atc.dev/agency/blobs/sha256/<sha256>` with no
+  `Authorization` header, or with a credential that is not valid, gets
+  `401` and `WWW-Authenticate: Basic realm="atc"`. Without that header, wget
+  does not send the credential.
+- A `GET` with `Authorization: Basic base64(<organization id>:<token>)` and a
+  valid pair gets the blob, or a redirect to it. wget does not send the
+  credential to the host of a redirect.
+
 ## Build
 
 | Target | Output |
@@ -150,6 +204,7 @@ whole-disk image written to a running device erases its store and its identity.
 | `ATC_OS_VERSION` | empty | the version that the bundle and `/etc/atc-os-version` carry |
 | `ATC_SLOT_KIB` | `1048576` | the size limit of one rootfs slot, in KiB |
 | `ATC_TEGRA_REDUNDANT` | `1` | `0` selects meta-tegra's single-rootfs layout. The A/B targets are then skipped |
+| `ATCD_NETRC_DIR` | empty | a directory with a `.netrc` file for the atcd download. See "Fetch credential" |
 
 Set them in `local.conf`, or in `conf/auto.conf` when a script writes
 `local.conf`.

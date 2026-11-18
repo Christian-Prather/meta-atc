@@ -95,6 +95,8 @@ SRC_URI = "file://atcd-boot-confirm.sh \
            file://atcd-release/index.json.sig \
            https://atc.dev/agency/blobs/sha256/${ATCD_SHA256};downloadfilename=atcd-${ATCD_VERSION}-${ATCD_TARGET};sha256sum=${ATCD_SHA256} \
            "
+ATCD_NETRC_DIR ?= ""
+do_fetch[vardepsexclude] += "ATCD_NETRC_DIR FETCHCMD_wget"
 do_compile() {
     ATC_TRACK="${ATCD_TRACK}" ATC_VERSION="${ATCD_VERSION}" ATC_TARGET="${ATCD_TARGET}" \
         ATC_LOCAL_DIR="$local_dir" ATC_DOWNLOAD_ONLY="${B}/atcd" \
@@ -312,6 +314,27 @@ make_fixture "$d16b"
 printf '%s\n' '# no do_compile[nostamp] here: the pin is in the signature' \
   >> "$d16b/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
 expect pass "a [nostamp] name in a comment passes" "$d16b"
+
+# 15c. The fetch credential must stay out of the metadata, and the netrc
+#      directory out of the do_fetch signature.
+# The sed expressions name bitbake variables and sed commands, not shell ones.
+# shellcheck disable=SC2016
+{
+  atcd_recipe_case user-param "a user= parameter in SRC_URI is caught" \
+    's/;sha256sum=${ATCD_SHA256} /;user=org;sha256sum=${ATCD_SHA256} /'
+  atcd_recipe_case pswd-param "a pswd= parameter in SRC_URI is caught" \
+    's/;sha256sum=${ATCD_SHA256} /;pswd=secret;sha256sum=${ATCD_SHA256} /'
+  atcd_recipe_case userinfo "a user:password@ in the URL is caught" \
+    's|https://atc.dev/|https://org:secret@atc.dev/|'
+  atcd_recipe_case netrc-in-signature "an ATCD_NETRC_DIR not excluded from do_fetch is caught" \
+    '/^do_fetch\[vardepsexclude\]/d'
+  atcd_recipe_case netrc-excluded-elsewhere "an ATCD_NETRC_DIR excluded from another task only is caught" \
+    's/^do_fetch\[vardepsexclude\]/do_unpack[vardepsexclude]/'
+}
+d16c="$tmp/no-netrc"
+make_fixture "$d16c"
+sed -i -e '/ATCD_NETRC_DIR/d' "$d16c/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
+expect pass "a recipe with no fetch credential passes" "$d16c"
 
 # 16. The deploy user is put in a `sudo` group. Yocto does not create one, so
 #     useradd fails on an unknown group and the account every push depends on is
