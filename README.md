@@ -35,6 +35,9 @@ recipes of other layers (GRUB, the kernel, RAUC, the meta-tegra BSP), and the
 Jetson flash layout. Without it, adding the layer changes no other recipe, and
 the atc images are skipped.
 
+The atcd binary is closed-source. A product must also accept its license. See
+[atcd license](#atcd-license).
+
 ## Set the machine
 
 Set `MACHINE` in `local.conf`:
@@ -170,6 +173,39 @@ The contract that the blob server must keep:
   valid pair gets the blob, or a redirect to it. wget does not send the
   credential to the host of a redirect.
 
+### atcd license
+
+The layer's own files are MIT. The atcd binary is not. It is closed-source,
+and the recipe declares it as `CLOSED`, Yocto's name for a license that ships
+no text. The recipe makes two packages:
+
+| Package | Holds | License |
+|---|---|---|
+| `atcd` | the atcd binary | `CLOSED` |
+| `atcd-boot-confirm` | the boot-confirm guard | `MIT \| Apache-2.0` |
+
+`atcd` depends on `atcd-boot-confirm`, so `IMAGE_INSTALL += "atcd"` installs
+both.
+
+The recipe sets `LICENSE_FLAGS = "commercial_atcd"`. To accept the license,
+set this in `local.conf` or in the product's distro conf:
+
+```
+LICENSE_FLAGS_ACCEPTED += "commercial_atcd"
+```
+
+Without it, bitbake skips the atcd recipe at parse time:
+
+```
+ERROR: Nothing RPROVIDES 'atcd' (but .../atc-image.bb RDEPENDS on or otherwise requires it)
+atcd was skipped: Has a restricted license 'commercial_atcd' which is not listed in your LICENSE_FLAGS_ACCEPTED.
+```
+
+`atc.inc` does not accept the license for you: the choice is the product's.
+Bitbake also accepts the flag when `LICENSE_FLAGS_ACCEPTED` holds the plain
+word `commercial`. The build scripts in `scripts/` accept it in the
+`local.conf` they write.
+
 ## Build
 
 | Target | Output |
@@ -239,5 +275,5 @@ Maintainer: Christian Prather <christian@agencytool.company>
 
 ## License
 
-MIT. See [LICENSE](LICENSE). The atcd binary that the layer downloads is
-under the atc license, MIT or Apache-2.0.
+The layer is MIT. See [LICENSE](LICENSE). The atcd binary that the layer
+downloads is closed-source. See [atcd license](#atcd-license).

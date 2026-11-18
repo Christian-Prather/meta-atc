@@ -6,10 +6,28 @@ path, service user and telemetry endpoint of the specific device, so a copy \
 baked into an image drifts from render_systemd_unit. First-boot \
 `atc bootstrap atcd install` renders it."
 HOMEPAGE = "https://github.com/Christian-Prather/meta-atc"
-# The layer's files are MIT. atcd, the guard and install-atcd.sh come from the
-# atc source, which is MIT OR Apache-2.0.
-LICENSE = "MIT | Apache-2.0"
+# Two licenses, one for each package. The atcd binary in ${PN} is
+# closed-source: CLOSED, Yocto's name for a license with no text to ship. The
+# guard in ${PN}-boot-confirm is a copy of an atc script, which is MIT OR
+# Apache-2.0. install-atcd.sh only runs at build time and is in no package.
+#
+# license.bbclass and license_image.bbclass expect no text for CLOSED, so
+# LIC_FILES_CHKSUM names the guard's license only.
+LICENSE = "CLOSED & (MIT | Apache-2.0)"
+LICENSE:${PN} = "CLOSED"
+LICENSE:${PN}-boot-confirm = "MIT | Apache-2.0"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
+
+# A product must accept the atcd license before bitbake builds atcd. Without
+# LICENSE_FLAGS_ACCEPTED += "commercial_atcd" bitbake skips the recipe at parse
+# time, and an image that installs atcd names this message as the reason.
+# Note: bitbake also accepts the flag when LICENSE_FLAGS_ACCEPTED holds the
+# plain word "commercial".
+LICENSE_FLAGS = "commercial_atcd"
+LICENSE_FLAGS_DETAILS[commercial_atcd] = 'The atcd binary is closed-source \
+(LICENSE CLOSED). To accept its license, set \
+LICENSE_FLAGS_ACCEPTED += "commercial_atcd" in local.conf or the distro \
+configuration. See "atcd license" in the meta-atc README.'
 
 # atcd is the static musl binary of the atc release. bitbake does not rebuild
 # it, so the image carries the same bytes the fleet runs.
@@ -103,8 +121,8 @@ ATCD_REMOTE_PATH = "${bindir}/atcd"
 
 S = "${WORKDIR}"
 
-# Only the guard is arch-independent. The binary makes the package
-# machine-specific, so the whole package is.
+# Only the guard is arch-independent. The binary makes the recipe
+# machine-specific, so both packages are.
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
 # readelf for the architecture check. OpenSSL 3 (ed25519 with -rawin) for the
@@ -178,7 +196,13 @@ readelf reports '${actual_machine}', expected '${ATCD_EXPECTED_ELF_MACHINE}'."
 # Deliberately NOT created here. `atcd install-self` creates /var/atc with the
 # modes the traverse-grant walk expects; a hardened image umask of 077 otherwise
 # produces 0700 directories and breaks `atcd attach` with EACCES.
-FILES:${PN} = "${ATCD_GUARD_PATH} ${ATCD_REMOTE_PATH}"
+#
+# The guard is in its own package, so it keeps its open license. ${PN}
+# depends on it, so an image that installs atcd still gets both files.
+PACKAGES =+ "${PN}-boot-confirm"
+FILES:${PN}-boot-confirm = "${ATCD_GUARD_PATH}"
+FILES:${PN} = "${ATCD_REMOTE_PATH}"
+RDEPENDS:${PN} += "${PN}-boot-confirm"
 
 # The release binary is a static musl ELF: it has no dynamic dependencies for
 # bitbake to resolve, and it is not built by this recipe's toolchain.

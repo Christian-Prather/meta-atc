@@ -79,6 +79,13 @@ meta-tegra https://example.invalid/meta-tegra scarthgap e7d217e24ca9943e959e80da
 EOF
 
   cat > "$root/meta-atc/recipes-core/atc/atcd_0.1.0.bb" << 'EOF'
+LICENSE = "CLOSED & (MIT | Apache-2.0)"
+LICENSE:${PN} = "CLOSED"
+LICENSE:${PN}-boot-confirm = "MIT | Apache-2.0"
+LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
+LICENSE_FLAGS = "commercial_atcd"
+FILES:${PN}-boot-confirm = "${ATCD_GUARD_PATH}"
+FILES:${PN} = "${ATCD_REMOTE_PATH}"
 ATCD_LIBEXEC = "/usr/local/libexec"
 ATCD_REMOTE_PATH = "${bindir}/atcd"
 ATCD_EXPECTED_ELF_MACHINE:qemux86-64 = "Advanced Micro Devices X86-64"
@@ -295,6 +302,42 @@ atcd_recipe_case() { # <name> <description> <sed expression>
   atcd_recipe_case no-version-pin "an install-atcd.sh run with no ATC_VERSION is caught" \
     's/ATC_VERSION="${ATCD_VERSION}" //'
 }
+
+# 15c. The atcd binary is closed-source, and a product must accept its license.
+#      Each mutation below breaks one part: the license names, the flag, or the
+#      package that holds the binary.
+# shellcheck disable=SC2016
+{
+  atcd_recipe_case old-license "the old LICENSE = \"MIT | Apache-2.0\" is caught" \
+    's/^LICENSE = .*/LICENSE = "MIT | Apache-2.0"/'
+  atcd_recipe_case open-pkg-license "an atcd package under an open license is caught" \
+    's/^LICENSE:${PN} = .*/LICENSE:${PN} = "MIT | Apache-2.0"/'
+  atcd_recipe_case no-pkg-license "an atcd package with no license of its own is caught" \
+    '/^LICENSE:${PN} = /d'
+  atcd_recipe_case closed-guard "a guard package under CLOSED is caught" \
+    's/^LICENSE:${PN}-boot-confirm = .*/LICENSE:${PN}-boot-confirm = "CLOSED"/'
+  atcd_recipe_case no-license-flags "a recipe with no LICENSE_FLAGS is caught" '/^LICENSE_FLAGS = /d'
+  atcd_recipe_case other-license-flag "a LICENSE_FLAGS of plain commercial is caught" \
+    's/^LICENSE_FLAGS = .*/LICENSE_FLAGS = "commercial"/'
+  atcd_recipe_case binary-in-guard-pkg "the binary in the open guard package is caught" \
+    's/^FILES:${PN}-boot-confirm = .*/FILES:${PN}-boot-confirm = "${ATCD_GUARD_PATH} ${ATCD_REMOTE_PATH}"/'
+  atcd_recipe_case binary-not-in-pn "an atcd package without the binary is caught" \
+    's/^FILES:${PN} = .*/FILES:${PN} = "${ATCD_GUARD_PATH}"/'
+}
+
+for conf in layer.conf distro/include/atc.inc; do
+  case_n_accept=$((${case_n_accept:-0} + 1))
+  dacc="$tmp/layer-accepts-$case_n_accept"
+  make_fixture "$dacc"
+  mkdir -p "$(dirname "$dacc/meta-atc/conf/$conf")"
+  printf '%s\n' 'LICENSE_FLAGS_ACCEPTED += "commercial_atcd"' >> "$dacc/meta-atc/conf/$conf"
+  expect fail "a layer $conf that accepts the atcd license is caught" "$dacc"
+done
+
+d16e="$tmp/accept-in-comment"
+make_fixture "$d16e"
+printf '%s\n' '# a product sets LICENSE_FLAGS_ACCEPTED += "commercial_atcd"' >> "$d16e/meta-atc/conf/layer.conf"
+expect pass "a LICENSE_FLAGS_ACCEPTED name in a layer comment passes" "$d16e"
 
 for f in index.json index.json.sig; do
   d="$tmp/missing-$f"

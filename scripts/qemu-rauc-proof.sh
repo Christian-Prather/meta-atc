@@ -168,6 +168,8 @@ MACHINE = "$MACHINE"
 DISTRO = "poky"
 INIT_MANAGER = "systemd"
 require conf/distro/include/atc.inc
+# The atcd binary is proprietary. This build accepts its license.
+LICENSE_FLAGS_ACCEPTED += "commercial_atcd"
 DISTRO_FEATURES:append = " rauc"
 EXTRA_IMAGE_FEATURES = "debug-tweaks"
 TMPDIR = "$CACHE_DIR/tmp-rauc"
@@ -520,6 +522,8 @@ self_test_build_conf() {
   grep -qx 'DISTRO_FEATURES:append = " rauc"' "$conf/local.conf" || die "self-test: no rauc feature"
   grep -qx 'INIT_MANAGER = "systemd"' "$conf/local.conf" || die "self-test: no systemd"
   grep -qx 'require conf/distro/include/atc.inc' "$conf/local.conf" || die "self-test: no atc.inc"
+  grep -qx 'LICENSE_FLAGS_ACCEPTED += "commercial_atcd"' "$conf/local.conf" ||
+    die "self-test: the atcd license is not accepted"
   grep -qx 'RAUC_KEYRING_FILE = "/k/ca.cert.pem"' "$conf/local.conf" || die "self-test: keyring"
   grep -qx 'TMPDIR = "/c/tmp-rauc"' "$conf/local.conf" || die "self-test: TMPDIR is shared"
   grep -qx 'ATC_RAUC_UNTRUSTED_CERT_FILE = "/k/other-signing.cert.pem"' "$conf/local.conf" ||
