@@ -62,6 +62,30 @@ SRC_URI = "file://atcd-boot-confirm.sh \
            https://atc.dev/agency/blobs/sha256/${ATCD_SHA256};downloadfilename=atcd-${ATCD_VERSION}-${ATCD_TARGET};sha256sum=${ATCD_SHA256} \
            "
 
+# An optional fetch credential. See "Fetch credential" in README.md.
+#
+# The credential is HTTP Basic, from a netrc file. wget reads $HOME/.netrc and
+# sends the login and password for the host of that entry only, after the
+# server asks for them with a 401. So a build user with an atc.dev entry in
+# ~/.netrc needs no setting here. ATCD_NETRC_DIR names another directory that
+# holds the .netrc file, for a builder whose credential is not in HOME. The
+# recipe then runs wget for its own download with HOME set to that directory.
+# --no-hsts stops wget from writing its HSTS cache there.
+#
+# The secret is in the netrc file only. Never put it in SRC_URI with user= and
+# pswd=: SRC_URI is in the task signature, the logs and bitbake -e. The
+# directory path is not in the signature either, so two builders with
+# different paths share sstate. A binary in DL_DIR or a premirror needs no
+# credential, and a mirror host gets none, because the netrc entry names
+# atc.dev only.
+ATCD_NETRC_DIR ?= ""
+python () {
+    if d.getVar('ATCD_NETRC_DIR'):
+        base = d.getVar('FETCHCMD_wget', False) or '/usr/bin/env wget -t 2 -T 100'
+        d.setVar('FETCHCMD_wget', '/usr/bin/env HOME=${ATCD_NETRC_DIR} ' + base + ' --no-hsts')
+}
+do_fetch[vardepsexclude] += "ATCD_NETRC_DIR FETCHCMD_wget"
+
 # The ELF machine name readelf must report for this target. A recipe that adds a
 # machine must add its expected value here, or do_install refuses the binary.
 ATCD_EXPECTED_ELF_MACHINE ?= ""
