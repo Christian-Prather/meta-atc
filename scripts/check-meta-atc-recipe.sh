@@ -209,6 +209,35 @@ if search '^[^#]*ATCD_NETRC_DIR' "$RECIPE" > /dev/null; then
 do_fetch signature; builders with different paths would not share sstate"
 fi
 
+# 3h. The atcd binary is closed-source, and a product must accept its license.
+#     The binary is in ${PN} under CLOSED, and the recipe carries
+#     LICENSE_FLAGS, so bitbake skips it unless LICENSE_FLAGS_ACCEPTED names the
+#     flag. The guard keeps its open license in its own package. CLOSED has no
+#     license text, so none is required here. The layer's own configuration
+#     must not accept the flag: that would accept the license for every product.
+search '^LICENSE = "CLOSED & \(MIT \| Apache-2\.0\)"$' "$RECIPE" > /dev/null ||
+  fail "the atcd recipe LICENSE is not \"CLOSED & (MIT | Apache-2.0)\""
+search '^LICENSE:\$\{PN\} = "CLOSED"$' "$RECIPE" > /dev/null ||
+  fail "the atcd package does not have the license CLOSED"
+search '^LICENSE:\$\{PN\}-boot-confirm = "MIT \| Apache-2\.0"$' "$RECIPE" > /dev/null ||
+  fail "the atcd-boot-confirm package does not have the license MIT | Apache-2.0"
+search '^LICENSE_FLAGS = "commercial_atcd"$' "$RECIPE" > /dev/null ||
+  fail "the atcd recipe has no LICENSE_FLAGS = \"commercial_atcd\"; a product \
+gets the closed-source binary without accepting its license"
+search '^FILES:\$\{PN\} = "\$\{ATCD_REMOTE_PATH\}"$' "$RECIPE" > /dev/null ||
+  fail "the atcd package does not hold exactly the binary, \${ATCD_REMOTE_PATH}"
+if search '^FILES:\$\{PN\}-[a-z-]+ .*ATCD_REMOTE_PATH' "$RECIPE" > /dev/null; then
+  fail "another package of the atcd recipe holds the binary, so it is not under \
+the CLOSED license"
+fi
+set +e
+accepts="$(rg -n -L -e '^[^#]*LICENSE_FLAGS_ACCEPTED' "$LAYER/conf" 2>&1)"
+status=$?
+set -e
+[ "$status" -le 1 ] || fail "rg failed (exit $status) on $LAYER/conf: $accepts"
+[ -z "$accepts" ] || fail "the layer configuration sets LICENSE_FLAGS_ACCEPTED, so every \
+product accepts the atcd license without a choice: $accepts"
+
 # 3f. No `sudo` group in EXTRA_USERS_PARAMS. That group is a Debian convention;
 #     Yocto's sudo package does not create it, so `useradd -G atc,sudo` fails on
 #     an unknown group and the deploy account never exists, and every

@@ -100,6 +100,8 @@ MACHINE = "$MACHINE"
 DISTRO = "poky"
 INIT_MANAGER = "systemd"
 require conf/distro/include/atc.inc
+# The atcd binary is proprietary. This build accepts its license.
+LICENSE_FLAGS_ACCEPTED += "commercial_atcd"
 TMPDIR = "$build_dir/tmp"
 CONF_VERSION = "2"
 EOF
@@ -183,6 +185,8 @@ self_test() {
   grep -qx "TMPDIR = \"$tmp/build/tmp\"" "$conf/local.conf" || die "self-test: TMPDIR is shared"
   grep -qx 'INIT_MANAGER = "systemd"' "$conf/local.conf" || die "self-test: no systemd"
   grep -qx 'require conf/distro/include/atc.inc' "$conf/local.conf" || die "self-test: no atc.inc"
+  grep -qx 'LICENSE_FLAGS_ACCEPTED += "commercial_atcd"' "$conf/local.conf" ||
+    die "self-test: the atcd license is not accepted"
   grep -qxF "  /c/layers/meta-tegra \\" "$conf/bblayers.conf" || die "self-test: no meta-tegra layer"
   grep -qxF "  /r/meta-atc \\" "$conf/bblayers.conf" || die "self-test: no meta-atc layer"
   [ "$(readlink "$conf/site.conf")" = /c/conf/site.conf ] || die "self-test: no site.conf link"
