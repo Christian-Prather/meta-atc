@@ -61,16 +61,53 @@ MACHINE=qemux86-64 bitbake atc-image
 
 ## atcd
 
-The layer does not compile atcd. The atcd recipe downloads the current
-release of a track with `install-atcd.sh`, on every build. The script checks
-the release signature and the binary's sha256 before the recipe installs it.
-The build needs network access to `https://atc.dev`.
-
-The track is `stable` by default. To take another one:
+The layer does not compile atcd. The image gets the atcd release that the
+recipe pins, not the newest release. `recipes-core/atc/atcd_0.1.0.bb` pins
+the track, the version and the sha256 of each target's binary:
 
 ```
-ATCD_TRACK = "nightly"
+ATCD_TRACK = "stable"
+ATCD_VERSION = "0.2.4"
+ATCD_SHA256:x86-64 = "064ae9ad..."
+ATCD_SHA256:aarch64 = "9cfeda11..."
 ```
+
+`do_fetch` downloads the binary from `https://atc.dev/agency/blobs/sha256/<sha256>`
+and checks its sha256. `do_compile` then runs `install-atcd.sh` with no network
+access, against the signed index of the release in
+`recipes-core/atc/files/atcd-release/`. The script checks the index signature,
+the track, the version and the binary's sha256 before the recipe installs it.
+
+The pin is in the task signature. A new pin rebuilds atcd and the images. An
+unchanged pin reuses sstate. With the binary in `DL_DIR` or a mirror, the build
+works with `BB_NO_NETWORK = "1"`.
+
+### Take a new atcd release
+
+1. Download the signed index of the track. Do not edit the two files: the
+   signature covers their exact bytes.
+
+   ```sh
+   cd recipes-core/atc/files/atcd-release
+   curl -fsSLO https://atc.dev/agency/stable/index.json
+   curl -fsSLO https://atc.dev/agency/stable/index.json.sig
+   ```
+
+2. Read the version and the two atcd digests from the index:
+
+   ```sh
+   python3 -c 'import json; d = json.load(open("index.json")); print(d["track"], d["version"]); [print(t, e["digest"]) for t, e in sorted(d["artifacts"]["agency/atcd"].items())]'
+   ```
+
+3. Set `ATCD_TRACK` and `ATCD_VERSION` to those values. Set
+   `ATCD_SHA256:x86-64` to the `linux-x86_64-musl` digest and
+   `ATCD_SHA256:aarch64` to the `linux-aarch64-musl` digest, without the
+   `sha256:` prefix.
+
+4. Run `tests/run.sh`. The recipe gate fails when the recipe and the index do
+   not agree. The build checks the signature.
+
+For another track, replace `stable` in the URLs and set `ATCD_TRACK` to match.
 
 ## Build
 
@@ -108,7 +145,6 @@ whole-disk image written to a running device erases its store and its identity.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `ATCD_TRACK` | `stable` | the release track the image's atcd comes from |
 | `ATC_DEPLOY_USER` | `atc-deploy` | the account that atc logs in as |
 | `ATC_DEPLOY_SSH_KEY` | empty | an SSH public key to install for that account |
 | `ATC_OS_VERSION` | empty | the version that the bundle and `/etc/atc-os-version` carry |
