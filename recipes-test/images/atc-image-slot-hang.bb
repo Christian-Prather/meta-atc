@@ -10,6 +10,7 @@
 # AN APPROXIMATION. The kernel does not hang: only the feeder stops. A real
 # kernel hang also stops the feeder, so the reset path is the same and only the
 # cause differs.
+require recipes-test/atc-test-recipe.inc
 require recipes-core/images/atc-image-slot.bb
 
 SUMMARY = "Fault image: an atc slot that stops feeding the watchdog"

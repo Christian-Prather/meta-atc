@@ -3,6 +3,7 @@
 # atc-bundle signed under a CA that the image keyring does NOT trust. RAUC must
 # refuse it, and the slots must not change. rauc-test-keys.sh writes the
 # untrusted key, and qemu-rauc-proof.sh names it in local.conf.
+require recipes-test/atc-test-recipe.inc
 require recipes-core/bundles/atc-bundle.bb
 
 FILESEXTRAPATHS:prepend := "${THISDIR}/../../recipes-core/bundles/files:"

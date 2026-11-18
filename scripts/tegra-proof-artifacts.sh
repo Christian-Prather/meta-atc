@@ -23,6 +23,9 @@
 #
 # Run it on the build host after:
 #   bitbake atc-image-ab atc-bundle atc-bundle-panic atc-bundle-hang
+# The two fault bundles build only with ATC_TEST_RECIPES = "1", which
+# tegra-build.sh does not write. Put it in the build dir's conf/auto.conf, and
+# only when that build dir signs with test keys.
 #
 # Usage:
 #   ./tegra-proof-artifacts.sh --deploy-dir <dir> --machine <m> --ca <file> \

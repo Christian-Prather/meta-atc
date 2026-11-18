@@ -3,6 +3,7 @@
 # atc-bundle with a `compatible` string that system.conf does not name. It is
 # signed under the trusted CA, so only the compatible check can refuse it. RAUC
 # must refuse it, and the slots must not change.
+require recipes-test/atc-test-recipe.inc
 require recipes-core/bundles/atc-bundle.bb
 
 FILESEXTRAPATHS:prepend := "${THISDIR}/../../recipes-core/bundles/files:"

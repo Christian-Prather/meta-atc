@@ -445,6 +445,57 @@ make_fixture "$d27"
 printf 'atc_f() {\n    if true; then\n        :\n    fi;\n}\n' >> "$d27/meta-atc/recipes-core/images/atc-image.bb"
 expect pass "a fi; in a shell function passes" "$d27"
 
+# 21. The fault recipes under recipes-test/ are opt-in. A fixture with the
+#     shared skip and one recipe that requires it passes. Each case removes one
+#     part of that.
+make_test_recipes() {
+  local root="$1"
+  mkdir -p "$root/meta-atc/recipes-test/bundles"
+  cat > "$root/meta-atc/recipes-test/atc-test-recipe.inc" << 'EOF'
+ATC_TEST_RECIPES ??= ""
+python () {
+    if d.getVar('ATC_TEST_RECIPES') != '1':
+        raise bb.parse.SkipRecipe("a fault-injection test recipe")
+}
+EOF
+  printf '%s\n' '# A FAULT BUNDLE.' 'require recipes-test/atc-test-recipe.inc' \
+    'require recipes-core/bundles/atc-bundle.bb' > "$root/meta-atc/recipes-test/bundles/atc-bundle-panic.bb"
+}
+d50="$tmp/test-recipes-opt-in"
+make_fixture "$d50"
+make_test_recipes "$d50"
+expect pass "test recipes that require the opt-in skip pass" "$d50"
+
+d51="$tmp/test-recipe-without-require"
+make_fixture "$d51"
+make_test_recipes "$d51"
+printf '%s\n' 'require recipes-core/bundles/atc-bundle.bb' > "$d51/meta-atc/recipes-test/bundles/atc-bundle-hang.bb"
+expect fail "a test recipe without the opt-in require is caught" "$d51"
+
+d52="$tmp/test-recipe-require-in-comment"
+make_fixture "$d52"
+make_test_recipes "$d52"
+sed -i 's|^require recipes-test/|# require recipes-test/|' "$d52/meta-atc/recipes-test/bundles/atc-bundle-panic.bb"
+expect fail "an opt-in require in a comment is caught" "$d52"
+
+d53="$tmp/test-inc-without-skip"
+make_fixture "$d53"
+make_test_recipes "$d53"
+sed -i '/SkipRecipe/d' "$d53/meta-atc/recipes-test/atc-test-recipe.inc"
+expect fail "an opt-in file that does not skip is caught" "$d53"
+
+d54="$tmp/test-inc-missing"
+make_fixture "$d54"
+make_test_recipes "$d54"
+rm "$d54/meta-atc/recipes-test/atc-test-recipe.inc"
+expect fail "recipes-test/ without the opt-in file is caught" "$d54"
+
+d55="$tmp/test-inc-wrong-test"
+make_fixture "$d55"
+make_test_recipes "$d55"
+sed -i "s/!= '1'/== '0'/" "$d55/meta-atc/recipes-test/atc-test-recipe.inc"
+expect fail "an opt-in file that skips only on '0' is caught" "$d55"
+
 if [ "$failures" -gt 0 ]; then
   echo "check-meta-atc-recipe_test: $failures case(s) failed" >&2
   exit 1

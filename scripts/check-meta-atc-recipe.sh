@@ -314,4 +314,23 @@ search '^PACKAGE_ARCH = "\$\{MACHINE_ARCH\}"$' "$LAYER/classes/atc-slot-backend.
   fail "atc-slot-backend.bbclass does not set PACKAGE_ARCH to MACHINE_ARCH, so a package \
 that differs by backend is shared between two machines of one tune"
 
+# 13. Every recipe under recipes-test/ requires atc-test-recipe.inc, and that
+#     file skips the recipe unless ATC_TEST_RECIPES is "1". The fault bundles
+#     are signed with the build's RAUC_KEY_FILE and carry its compatible string,
+#     and BBFILES matches recipes-test/. Without the skip, a product build dir
+#     (`bitbake world`) makes bundles that RAUC accepts and that do not boot.
+TEST_DIR="$LAYER/recipes-test"
+TEST_INC="$TEST_DIR/atc-test-recipe.inc"
+if [ -d "$TEST_DIR" ]; then
+  [ -f "$TEST_INC" ] || fail "recipes-test/ has no atc-test-recipe.inc, so its fault recipes build in every build dir"
+  search "^[^#]*d\.getVar\('ATC_TEST_RECIPES'\) != '1':\$" "$TEST_INC" > /dev/null ||
+    fail "atc-test-recipe.inc does not test ATC_TEST_RECIPES against '1'"
+  search '^[^#]*raise bb\.parse\.SkipRecipe\(' "$TEST_INC" > /dev/null ||
+    fail "atc-test-recipe.inc does not raise SkipRecipe, so the fault recipes build without the opt-in"
+  while IFS= read -r -d '' f; do
+    search '^require recipes-test/atc-test-recipe\.inc$' "$f" > /dev/null ||
+      fail "${f#"$LAYER"/} does not require recipes-test/atc-test-recipe.inc, so it builds without ATC_TEST_RECIPES"
+  done < <(find -L "$TEST_DIR" -type f \( -name '*.bb' -o -name '*.bbappend' \) -print0)
+fi
+
 echo "check-meta-atc-recipe: OK"

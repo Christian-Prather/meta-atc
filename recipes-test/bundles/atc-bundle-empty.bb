@@ -4,6 +4,7 @@
 # compatible, so RAUC installs it. GRUB then finds no kernel in the slot, its
 # `linux` command fails, and grub.cfg reboots. The next boot finds the trial
 # spent and boots the last confirmed slot.
+require recipes-test/atc-test-recipe.inc
 require recipes-core/bundles/atc-bundle.bb
 
 FILESEXTRAPATHS:prepend := "${THISDIR}/../../recipes-core/bundles/files:"

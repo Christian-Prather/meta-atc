@@ -4,6 +4,7 @@
 # ("Attempted to kill init"), and `panic=5` on the GRUB command line reboots
 # it. That is a panic in early userspace: the trial boot never reaches a mark,
 # so GRUB finds the trial spent and boots the last confirmed slot.
+require recipes-test/atc-test-recipe.inc
 require recipes-core/images/atc-image-slot.bb
 
 SUMMARY = "Fault image: an atc slot whose init exits, so the kernel panics"

@@ -175,6 +175,9 @@ ATC_OS_VERSION = "$OS_VERSION"
 RAUC_KEYRING_FILE = "$KEY_DIR/ca.cert.pem"
 RAUC_KEY_FILE = "$KEY_DIR/signing.key.pem"
 RAUC_CERT_FILE = "$KEY_DIR/signing.cert.pem"
+# The fault recipes under recipes-test/ are skipped without this opt-in. This
+# build signs with test keys, so it may build them.
+ATC_TEST_RECIPES = "1"
 # The fault suite's bad-signature bundle, signed under a CA the image does not
 # trust. Only the recipes under recipes-test/ read these.
 ATC_RAUC_UNTRUSTED_KEY_FILE = "$KEY_DIR/other-signing.key.pem"
@@ -520,6 +523,7 @@ self_test_build_conf() {
   grep -qx 'TMPDIR = "/c/tmp-rauc"' "$conf/local.conf" || die "self-test: TMPDIR is shared"
   grep -qx 'ATC_RAUC_UNTRUSTED_CERT_FILE = "/k/other-signing.cert.pem"' "$conf/local.conf" ||
     die "self-test: no untrusted signing cert"
+  grep -qx 'ATC_TEST_RECIPES = "1"' "$conf/local.conf" || die "self-test: no test-recipe opt-in"
   grep -qxF "  /c/layers/meta-rauc \\" "$conf/bblayers.conf" || die "self-test: no meta-rauc layer"
   grep -qxF "  /r/meta-atc \\" "$conf/bblayers.conf" || die "self-test: no meta-atc layer"
   [ "$(readlink "$conf/site.conf")" = /c/conf/site.conf ] || die "self-test: site.conf link"
