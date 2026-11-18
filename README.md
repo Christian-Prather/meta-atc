@@ -46,10 +46,17 @@ MACHINE = "qemux86-64"
 | Machine | Slot backend |
 |---|---|
 | `qemux86-64` | GRUB |
-| `qemuarm64` | none: `atc-image` only |
 | a meta-tegra `tegra234` machine, for example `jetson-orin-nano-devkit-nvme` | NVIDIA boot control (`nvbootctrl`) |
+| every other machine, for example `qemuarm64` or a product BSP | none |
 
 The layer selects the slot backend from the machine. You do not set it.
+`classes/atc-slot-backend-map.bbclass` holds the list.
+
+A machine with no backend gets `atc-image` and atcd, but no A/B update path.
+bitbake skips `atc-image-ab`, `atc-image-slot`, `atc-bundle` and `atc-os`, and
+gives the reason. The layer leaves the `rauc`, `rauc-conf` and `grub-efi`
+recipes as their layers wrote them, so a product BSP keeps its own RAUC
+configuration.
 
 To set `MACHINE` from the environment instead, add it to the passthrough list.
 Otherwise bitbake drops it and builds `local.conf`'s machine without a warning:

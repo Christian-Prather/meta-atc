@@ -1,20 +1,29 @@
 # The A/B slot backend: what counts a boot, what records a confirm, and what
 # the factory flashes. Everything above it (the bundle, the store, atcd, the
 # trial deadline, the pre-install guard) is the same on every machine.
-#
-#   grub        qemux86-64. grub.cfg counts one trial, RAUC writes grubenv.
-#   nvbootctrl  tegra234. NVIDIA's launcher counts the boot, and RAUC's custom
-#               backend drives it through nvbootctrl.
+# atc-slot-backend-map.bbclass maps each machine to its backend: `grub`,
+# `nvbootctrl`, or `none`.
 #
 # A recipe that differs by backend inherits this class and keys the difference
 # on `atc-slot-grub` or `atc-slot-nvbootctrl`, never on a machine name. An
 # override from a class reaches only the recipes that inherit it, so each
 # bbappend that differs by backend inherits it too. A third backend adds one
-# value here and one variant per recipe. It edits no existing branch.
+# value to the map and one variant per recipe. It edits no existing branch.
 #
-ATC_SLOT_BACKEND ??= "grub"
-ATC_SLOT_BACKEND:tegra234 ??= "nvbootctrl"
+inherit atc-slot-backend-map
 OVERRIDES .= ":atc-slot-${ATC_SLOT_BACKEND}"
+
+# Every recipe that inherits this class differs by backend, so on `none` it
+# has nothing to build. It is skipped with the reason, not failed: bitbake
+# parses every recipe of the layer, and atc-image builds on that machine.
+python () {
+    if d.getVar('ATC_SLOT_BACKEND') == 'none':
+        raise bb.parse.SkipRecipe(
+            "MACHINE '%s' has no A/B slot backend (ATC_SLOT_BACKEND is 'none'), "
+            "so it has no atc A/B update path. atc-image and atcd still build. "
+            "atc-slot-backend-map.bbclass lists the machines with a backend"
+            % d.getVar('MACHINE'))
+}
 
 # The backend is a property of the machine, so whatever a recipe builds on it
 # is too. Two machines of one tune can have two backends (qemuarm64 and an
