@@ -192,6 +192,23 @@ for pair in x86-64:linux-x86_64-musl aarch64:linux-aarch64-musl; do
     fail "ATCD_SHA256:${arch} is not the digest of agency/atcd ${target} in the index in atcd-release/"
 done
 
+# 3g. The fetch credential stays out of the metadata. A user= or pswd= URL
+#     parameter, or a user:password@ in the URL, puts the secret in SRC_URI,
+#     and so in the task signature, sstate, the logs and bitbake -e. The
+#     credential comes from a netrc file. The directory that holds it differs
+#     between builders, so do_fetch must exclude ATCD_NETRC_DIR from its
+#     signature, or two builders do not share sstate.
+if search '^[^#]*(;(user|pswd)=|https?://[^/ "]*@)' "$RECIPE" > /dev/null; then
+  fail "the atcd recipe puts a credential in a URL (user=, pswd= or user@host). \
+That puts it in the task signature and the logs. Use a netrc file, see \
+'Fetch credential' in README.md"
+fi
+if search '^[^#]*ATCD_NETRC_DIR' "$RECIPE" > /dev/null; then
+  search '^do_fetch\[vardepsexclude\] \+?= "[^"]*\bATCD_NETRC_DIR\b' "$RECIPE" > /dev/null ||
+    fail "the atcd recipe uses ATCD_NETRC_DIR but does not exclude it from the \
+do_fetch signature; builders with different paths would not share sstate"
+fi
+
 # 3f. No `sudo` group in EXTRA_USERS_PARAMS. That group is a Debian convention;
 #     Yocto's sudo package does not create it, so `useradd -G atc,sudo` fails on
 #     an unknown group and the deploy account never exists, and every
