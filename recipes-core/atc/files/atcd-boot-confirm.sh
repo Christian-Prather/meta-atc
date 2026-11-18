@@ -51,6 +51,50 @@ else
   ATCD="$ATCD_RELEASE_ROOT/current/atcd/atcd"
 fi
 
+# Store layout v6 (design section 7): on a store at layout 6, an atcd that
+# reads only layout 5 must not count or roll back. Both write v5 paths into
+# the v6 store. Such an atcd prints 5 for `layout-version`, or clap refuses
+# the verb with exit 2. Any other answer counts as before: the checks below
+# report a broken atcd.
+reads_only_v5() {
+  rov_out="$("$1" layout-version 2> /dev/null)" && rov_rc=0 || rov_rc=$?
+  if [ "$rov_rc" = 0 ] && [ "$rov_out" = 5 ]; then return 0; fi
+  if [ "$rov_rc" = 2 ]; then
+    rov_err="$("$1" layout-version 2>&1 > /dev/null)" || :
+    case "$rov_err" in *'unrecognized subcommand'*) return 0 ;; esac
+  fi
+  return 1
+}
+# Under contract 2 the confirmed atcd can read only layout 5, while the
+# current atcd, the candidate, moved the store to layout 6 on its first start
+# and then failed to confirm. Only an atcd that reads layout 6 can move the
+# store back: its `atcd rollback` reverses the store, then flips `current`.
+# So the guard then uses `current`, but only when `current` runs and answers
+# 6 or more. When `current` cannot run, no atcd on the device may write here: the
+# guard writes nothing and names the repair. ExecStart then fails on the
+# layout, which writes nothing either. An ATCD_BIN override is never replaced.
+layout="$(cat "$STORE_ROOT/LAYOUT_VERSION" 2> /dev/null || true)"
+if [ "$layout" = 6 ] && reads_only_v5 "$ATCD"; then
+  ATCD_CURRENT="$ATCD_RELEASE_ROOT/current/atcd/atcd"
+  cur_lv=
+  if [ -z "${ATCD_BIN:-}" ] && [ "$ATCD" != "$ATCD_CURRENT" ] &&
+    [ -f "$ATCD_CURRENT" ] && [ -x "$ATCD_CURRENT" ]; then
+    cur_lv="$("$ATCD_CURRENT" layout-version 2> /dev/null)" || cur_lv=
+  fi
+  # A later atcd reads layout 6 too, so any integer of 6 or more qualifies.
+  case "$cur_lv" in '' | *[!0-9]*) cur_lv=0 ;; esac
+  if [ "$cur_lv" -ge 6 ]; then
+    echo "atcd-boot-confirm: the store has layout 6 and the confirmed atcd reads only" >&2
+    echo "atcd-boot-confirm: layout 5, so the count and any rollback use the current atcd." >&2
+    ATCD="$ATCD_CURRENT"
+  else
+    echo "atcd-boot-confirm: the store has layout 6, and this atcd reads only layout 5." >&2
+    echo "atcd-boot-confirm: skipped the count and the rollback, and wrote nothing." >&2
+    echo "atcd-boot-confirm: run 'atc bootstrap atcd install' with a current atcd to repair it." >&2
+    exit 0
+  fi
+fi
+
 count_raw="$("$ATCD" boot-confirm increment --store-root "$STORE_ROOT" 2> /dev/null)" &&
   increment_ran=1 || increment_ran=0
 # #1099: the numeric test below must never die with "[: Illegal number", so an
