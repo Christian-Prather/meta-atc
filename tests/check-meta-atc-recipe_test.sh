@@ -57,6 +57,16 @@ make_fixture() {
     > "$root/meta-atc/recipes-core/atc/files/atcd-boot-confirm.sh"
   printf '%s\n' '#!/bin/sh' 'echo install' > "$root/meta-atc/recipes-core/atc/files/install-atcd.sh"
 
+  # The signed index of the pinned release: one line of compact JSON, as the
+  # origin serves it. The agency/atc entry holds digests that must not satisfy
+  # the agency/atcd check.
+  mkdir -p "$root/meta-atc/recipes-core/atc/files/atcd-release"
+  printf '%s' '{"artifacts":{"agency/atc":{"linux-x86_64-musl":{"digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","url":"u"}},' \
+    '"agency/atcd":{"linux-aarch64-musl":{"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","size":1,"url":"u"},' \
+    '"linux-x86_64-musl":{"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":1,"url":"u"}}},' \
+    '"track":"stable","version":"0.2.4"}' > "$root/meta-atc/recipes-core/atc/files/atcd-release/index.json"
+  printf '%s\n' '8f0661861de15f45 00' > "$root/meta-atc/recipes-core/atc/files/atcd-release/index.json.sig"
+
   cat > "$root/meta-atc/conf/layer.conf" << 'EOF'
 LAYERSERIES_COMPAT_atc = "scarthgap"
 LAYERDEPENDS_atc = "core rauc"
@@ -74,9 +84,20 @@ ATCD_REMOTE_PATH = "${bindir}/atcd"
 ATCD_EXPECTED_ELF_MACHINE:qemux86-64 = "Advanced Micro Devices X86-64"
 ATCD_EXPECTED_ELF_MACHINE:qemuarm64 = "AArch64"
 ATCD_EXPECTED_ELF_MACHINE:tegra234 = "AArch64"
-do_compile[nostamp] = "1"
+ATCD_TRACK = "stable"
+ATCD_VERSION = "0.2.4"
+ATCD_SHA256 = ""
+ATCD_SHA256:x86-64 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ATCD_SHA256:aarch64 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+SRC_URI = "file://atcd-boot-confirm.sh \
+           file://install-atcd.sh \
+           file://atcd-release/index.json \
+           file://atcd-release/index.json.sig \
+           https://atc.dev/agency/blobs/sha256/${ATCD_SHA256};downloadfilename=atcd-${ATCD_VERSION}-${ATCD_TARGET};sha256sum=${ATCD_SHA256} \
+           "
 do_compile() {
-    ATC_TRACK="${ATCD_TRACK}" ATC_DOWNLOAD_ONLY="${B}/atcd" \
+    ATC_TRACK="${ATCD_TRACK}" ATC_VERSION="${ATCD_VERSION}" ATC_TARGET="${ATCD_TARGET}" \
+        ATC_LOCAL_DIR="$local_dir" ATC_DOWNLOAD_ONLY="${B}/atcd" \
         sh ${WORKDIR}/install-atcd.sh
 }
 do_install() {
@@ -171,7 +192,7 @@ make_fixture "$d10"
 sed -i '/chown -R/d' "$d10/meta-atc/recipes-core/images/atc-image.bb"
 expect fail "an SSH key that is never chowned is caught" "$d10"
 
-# 10. The recipe fetches atcd some other way than install-atcd.sh, so neither
+# 10. The recipe gets atcd some other way than install-atcd.sh, so neither
 #     the release signature nor the sha256 is checked.
 d11="$tmp/no-install-script"
 make_fixture "$d11"
@@ -221,12 +242,76 @@ sed -i 's|^ATCD_REMOTE_PATH = .*|ATCD_REMOTE_PATH = "/usr/local/bin/atcd"|' \
   "$d15/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
 expect fail "a recipe installing onto the symlink path is caught" "$d15"
 
-# 15. The download is cached, so a new release never reaches the image and the
-#     build reports success.
-d16="$tmp/no-nostamp"
+# 15. The atcd release must be pinned, so it is in the task signature. A
+#     download of a moving release in do_compile is not: the image stays cached
+#     with the old binary, a shared sstate skips the download, and an offline
+#     build fails. Each mutation below breaks one part of the pin.
+atcd_recipe_case() { # <name> <description> <sed expression>
+  local d="$tmp/$1"
+  make_fixture "$d"
+  sed -i -e "$3" "$d/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
+  expect fail "$2" "$d"
+}
+# The sed expressions name bitbake variables and sed commands, not shell ones.
+# shellcheck disable=SC2016
+{
+  atcd_recipe_case nostamp "a do_compile[nostamp] flag is caught" '$a do_compile[nostamp] = "1"'
+  atcd_recipe_case network "a do_compile[network] flag is caught" '$a do_compile[network] = "1"'
+  atcd_recipe_case network-other-task "a [network] flag on another task is caught" \
+    '$a do_install[network] = "1"'
+  atcd_recipe_case no-version "a recipe with no ATCD_VERSION is caught" '/^ATCD_VERSION/d'
+  atcd_recipe_case moving-version "an ATCD_VERSION that is not a version is caught" \
+    's/^ATCD_VERSION = .*/ATCD_VERSION = "latest"/'
+  atcd_recipe_case weak-version "an ATCD_VERSION set with ?= is caught" \
+    's/^ATCD_VERSION = /ATCD_VERSION ?= /'
+  atcd_recipe_case no-track "a recipe with no ATCD_TRACK is caught" '/^ATCD_TRACK/d'
+  atcd_recipe_case no-sha-x86 "a recipe with no ATCD_SHA256:x86-64 is caught" '/^ATCD_SHA256:x86-64/d'
+  atcd_recipe_case no-sha-arm "a recipe with no ATCD_SHA256:aarch64 is caught" '/^ATCD_SHA256:aarch64/d'
+  atcd_recipe_case short-sha "a short ATCD_SHA256 is caught" 's/^\(ATCD_SHA256:aarch64 = "\)bb*"/\1bbbb"/'
+  atcd_recipe_case no-sha256sum "a binary URL with no sha256sum is caught" 's/;sha256sum=${ATCD_SHA256}//'
+  atcd_recipe_case url-by-version "a binary URL that is not addressed by the sha256 is caught" \
+    's|blobs/sha256/${ATCD_SHA256};|releases/${ATCD_VERSION};|'
+  atcd_recipe_case shared-dl-name "a download file name without the version is caught" \
+    's/downloadfilename=atcd-${ATCD_VERSION}-/downloadfilename=atcd-/'
+  atcd_recipe_case index-not-fetched "an index file missing from SRC_URI is caught" \
+    '/file:\/\/atcd-release\/index.json \\$/d'
+  atcd_recipe_case sig-not-fetched "an index signature missing from SRC_URI is caught" \
+    '/file:\/\/atcd-release\/index.json.sig/d'
+  atcd_recipe_case version-off-index "an ATCD_VERSION the index does not name is caught" \
+    's/^ATCD_VERSION = .*/ATCD_VERSION = "0.2.5"/'
+  atcd_recipe_case track-off-index "an ATCD_TRACK the index does not name is caught" \
+    's/^ATCD_TRACK = .*/ATCD_TRACK = "nightly"/'
+  atcd_recipe_case sha-off-index "an ATCD_SHA256 that is not the index digest is caught" \
+    's/^ATCD_SHA256:x86-64 = .*/ATCD_SHA256:x86-64 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"/'
+  # The agency/atc binary's digest is in the index too, but it is not atcd.
+  atcd_recipe_case sha-of-atc "an ATCD_SHA256 that is the digest of another artifact is caught" \
+    's/^ATCD_SHA256:x86-64 = .*/ATCD_SHA256:x86-64 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"/'
+  atcd_recipe_case sha-swapped "per-target ATCD_SHA256 values that are swapped are caught" \
+    's/^ATCD_SHA256:x86-64 = "a*"/ATCD_SHA256:x86-64 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"/'
+  atcd_recipe_case no-local-mode "an install-atcd.sh run that is not in local mode is caught" \
+    's/ATC_LOCAL_DIR="$local_dir" //'
+  atcd_recipe_case no-version-pin "an install-atcd.sh run with no ATC_VERSION is caught" \
+    's/ATC_VERSION="${ATCD_VERSION}" //'
+}
+
+for f in index.json index.json.sig; do
+  d="$tmp/missing-$f"
+  make_fixture "$d"
+  rm "$d/meta-atc/recipes-core/atc/files/atcd-release/$f"
+  expect fail "a missing atcd-release/$f is caught" "$d"
+done
+
+d16="$tmp/index-without-atcd"
 make_fixture "$d16"
-sed -i '/do_compile\[nostamp\]/d' "$d16/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
-expect fail "a recipe without do_compile[nostamp] is caught" "$d16"
+sed -i 's|"agency/atcd"|"agency/other"|' "$d16/meta-atc/recipes-core/atc/files/atcd-release/index.json"
+expect fail "an index with no agency/atcd entry is caught" "$d16"
+
+# 15b. A flag name in a comment is not a flag.
+d16b="$tmp/nostamp-in-comment"
+make_fixture "$d16b"
+printf '%s\n' '# no do_compile[nostamp] here: the pin is in the signature' \
+  >> "$d16b/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
+expect pass "a [nostamp] name in a comment passes" "$d16b"
 
 # 16. The deploy user is put in a `sudo` group. Yocto does not create one, so
 #     useradd fails on an unknown group and the account every push depends on is

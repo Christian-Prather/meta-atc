@@ -1,0 +1,3 @@
+# The signed index of the pinned atcd release. The signature covers its exact
+# bytes, so git must never convert its line endings.
+recipes-core/atc/files/atcd-release/* -text

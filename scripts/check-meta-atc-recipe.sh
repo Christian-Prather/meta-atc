@@ -111,13 +111,15 @@ if search 'ATC_DEPLOY_SSH_KEY' "$IMAGE" > /dev/null; then
 sshd refuses a key owned by the build user"
 fi
 
-# 3c. atcd comes from install-atcd.sh in download-only mode. That script checks
-#     the release signature and the binary's sha256. Any other way to fetch it
-#     skips both checks.
+# 3c. atcd is verified by install-atcd.sh in local, download-only mode, pinned
+#     to ATCD_VERSION. That script checks the release signature, the version
+#     and the binary's sha256. Any other way skips those checks. Local mode
+#     reads the files that do_fetch got, so do_compile needs no network.
 #     The command spans continuation lines, so join them first (see 3d).
-rg -q '^[^#]*ATC_DOWNLOAD_ONLY=.*install-atcd\.sh' \
+rg -q '^[^#]*ATC_VERSION="\$\{ATCD_VERSION\}".*ATC_LOCAL_DIR=.*ATC_DOWNLOAD_ONLY=.*install-atcd\.sh' \
   < <(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba' -e '}' "$RECIPE") ||
-  fail "the recipe does not fetch atcd with install-atcd.sh in download-only mode"
+  fail "the recipe does not verify atcd with install-atcd.sh in local, download-only \
+mode, pinned to ATCD_VERSION"
 
 # 3d. No backtick inside a bbnote/bbfatal message. Those run in a SHELL function,
 #     so a backtick is command substitution, not quoting: a message reading
@@ -142,13 +144,53 @@ That is command substitution in the build shell. Use single quotes"
   fi
 done
 
-# 3e. The download must run on every build. The track's current release
-#     changes with no change to any variable, so without nostamp bitbake reuses
-#     the cached download and the image ships an OLD atcd while the build
-#     reports success.
-search '^do_compile\[nostamp\] = "1"' "$RECIPE" > /dev/null ||
-  fail "the recipe does not set do_compile[nostamp]; \
-a cached download would ship an old atcd from sstate"
+# 3e. The atcd release is pinned, so it is part of the task signature. A
+#     download of a moving "current release" is not: nostamp reruns atcd's own
+#     tasks only, the image's do_rootfs stays cached with the old binary, a
+#     shared sstate skips do_compile altogether, and an offline build cannot
+#     run it. So the recipe pins the track, the version and the sha256 of each
+#     target, and do_fetch gets the binary by that sha256. No task of the
+#     recipe takes the network or nostamp flag.
+if search '^[^#]*\[(network|nostamp)\]' "$RECIPE" > /dev/null; then
+  fail "the atcd recipe sets a [network] or [nostamp] task flag. Pin the release \
+in ATCD_VERSION and ATCD_SHA256 and let do_fetch download it"
+fi
+atcd_track="$(search_optional '^ATCD_TRACK = "[a-z0-9-]+"$' "$RECIPE" | sed -n 's/.*"\(.*\)".*/\1/p')"
+[ -n "$atcd_track" ] ||
+  fail "the atcd recipe does not pin ATCD_TRACK to a track name"
+atcd_version="$(search_optional '^ATCD_VERSION = "[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?"$' "$RECIPE" |
+  sed -n 's/.*"\(.*\)".*/\1/p')"
+[ -n "$atcd_version" ] ||
+  fail "the atcd recipe does not pin ATCD_VERSION to a release version such as 0.2.4"
+search '^[^#]*https://[^;"]*/\$\{ATCD_SHA256\};([^ "]*;)?sha256sum=\$\{ATCD_SHA256\}' "$RECIPE" > /dev/null ||
+  fail "the atcd recipe does not fetch the binary in SRC_URI by its address \
+\${ATCD_SHA256} with sha256sum=\${ATCD_SHA256}"
+search '^[^#]*;downloadfilename=[^; "]*\$\{ATCD_VERSION\}' "$RECIPE" > /dev/null ||
+  fail "the atcd download file name does not hold \${ATCD_VERSION}; two pins \
+would share one file in DL_DIR"
+ATCD_RELEASE_DIR="$LAYER/recipes-core/atc/files/atcd-release"
+for f in index.json index.json.sig; do
+  [ -f "$ATCD_RELEASE_DIR/$f" ] || fail "missing the signed index of the pinned release: $ATCD_RELEASE_DIR/$f"
+  search "file://atcd-release/${f//./\\.}([ \"\\\\]|\$)" "$RECIPE" > /dev/null ||
+    fail "the atcd recipe does not put atcd-release/$f in SRC_URI"
+done
+# The pin must match the signed index. The build checks the signature and the
+# exact fields; this catches a half-done bump before any build. The index is one
+# line of compact JSON, and no atcd target object holds a brace.
+index="$ATCD_RELEASE_DIR/index.json"
+search "\"track\":\"$atcd_track\"" "$index" > /dev/null ||
+  fail "ATCD_TRACK is '$atcd_track', but the index in atcd-release/ is for another track"
+search "\"version\":\"${atcd_version//./\\.}\"" "$index" > /dev/null ||
+  fail "ATCD_VERSION is '$atcd_version', but the index in atcd-release/ is for another version"
+atcd_entry="$(rg -o -e '"agency/atcd":\{("[a-z0-9_-]+":\{[^{}]*\},?)+\}' "$index" || true)"
+[ -n "$atcd_entry" ] || fail "the index in atcd-release/ has no agency/atcd entry"
+for pair in x86-64:linux-x86_64-musl aarch64:linux-aarch64-musl; do
+  arch="${pair%%:*}" target="${pair#*:}"
+  sha="$(search_optional "^ATCD_SHA256:${arch} = \"[0-9a-f]{64}\"$" "$RECIPE" | sed -n 's/.*"\(.*\)".*/\1/p')"
+  [ -n "$sha" ] || fail "the atcd recipe does not pin ATCD_SHA256:${arch} to a 64-hex sha256"
+  rg -q -e "\"${target}\":\\{[^{}]*\"digest\":\"sha256:${sha}\"" <<< "$atcd_entry" ||
+    fail "ATCD_SHA256:${arch} is not the digest of agency/atcd ${target} in the index in atcd-release/"
+done
 
 # 3f. No `sudo` group in EXTRA_USERS_PARAMS. That group is a Debian convention;
 #     Yocto's sudo package does not create it, so `useradd -G atc,sudo` fails on

@@ -1,6 +1,6 @@
 SUMMARY = "atcd and its boot-confirm guard"
-DESCRIPTION = "Installs the atcd A/B boot-confirm guard and atcd, the current \
-release of ATCD_TRACK, downloaded and verified by install-atcd.sh. The recipe \
+DESCRIPTION = "Installs the atcd A/B boot-confirm guard and atcd, the release \
+that ATCD_VERSION pins, verified by install-atcd.sh. The recipe \
 does NOT install a systemd unit: the unit interpolates the store root, socket \
 path, service user and telemetry endpoint of the specific device, so a copy \
 baked into an image drifts from render_systemd_unit. First-boot \
@@ -11,25 +11,56 @@ HOMEPAGE = "https://github.com/Christian-Prather/meta-atc"
 LICENSE = "MIT | Apache-2.0"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
-# atcd is the static musl binary of the atc release. do_compile runs
-# install-atcd.sh in download-only mode for the current release of ATCD_TRACK.
-# The script checks the ed25519 signature of the release index and the sha256
-# of the binary before it writes anything. bitbake does not rebuild atcd, so
-# the image carries the same bytes the fleet runs.
+# atcd is the static musl binary of the atc release. bitbake does not rebuild
+# it, so the image carries the same bytes the fleet runs.
+#
+# The release is pinned. ATCD_VERSION and ATCD_SHA256 are in the task
+# signature, so a new pin rebuilds atcd and every image that holds it, and an
+# unchanged pin restores from sstate. do_fetch downloads the binary from its
+# content-addressed URL and checks its sha256. do_compile then runs
+# install-atcd.sh in local mode, with no network access, against the signed
+# index of the pinned release in files/atcd-release/. The script checks the
+# ed25519 signature of the index, its track and version, and the sha256 of the
+# binary before it writes anything. With the binary in DL_DIR or a mirror, the
+# build needs no network.
+#
+# To take a new release, follow "atcd" in README.md: replace the two index
+# files, then set ATCD_VERSION and both ATCD_SHA256 values from the new index.
 INHIBIT_PACKAGE_STRIP = "1"
 INHIBIT_PACKAGE_DEBUG_SPLIT = "1"
 INHIBIT_SYSROOT_STRIP = "1"
 
-# The guard and install-atcd.sh are copies of atc's own scripts. The atc
-# maintainers keep them byte-for-byte equal to the originals.
-SRC_URI = "file://atcd-boot-confirm.sh file://install-atcd.sh"
-
-ATCD_TRACK ?= "stable"
+# The track and version of the pinned release. Both must equal the values in
+# files/atcd-release/index.json, or install-atcd.sh refuses the index.
+ATCD_TRACK = "stable"
+ATCD_VERSION = "0.2.4"
 
 # The release target for this build's architecture.
 ATCD_TARGET = ""
 ATCD_TARGET:x86-64 = "linux-x86_64-musl"
 ATCD_TARGET:aarch64 = "linux-aarch64-musl"
+
+# The sha256 of the atcd binary of ATCD_VERSION for each target. It is the
+# "digest" of the agency/atcd entry in the signed index, and the blob address.
+ATCD_SHA256 = ""
+ATCD_SHA256:x86-64 = "064ae9ad001ba1a57fcb88ef3c33b8ae4c1cf05b37260b2bb2228eb289e9f82a"
+ATCD_SHA256:aarch64 = "9cfeda114c321a48b55eb397866dd9f786e7caf8ec490506fae9ccc552d6313d"
+
+# atcd has a release for these hosts only. On any other host bitbake skips the
+# recipe at parse time, instead of a failed fetch of an empty URL.
+COMPATIBLE_HOST = "(x86_64|aarch64).*-linux.*"
+
+# The guard and install-atcd.sh are copies of atc's own scripts. The atc
+# maintainers keep them byte-for-byte equal to the originals. The index files
+# are the signed index of the pinned release, byte for byte as the origin
+# served it. The last entry is the binary. Its file name holds the version and
+# the target, so two pins never share one file in DL_DIR.
+SRC_URI = "file://atcd-boot-confirm.sh \
+           file://install-atcd.sh \
+           file://atcd-release/index.json \
+           file://atcd-release/index.json.sig \
+           https://atc.dev/agency/blobs/sha256/${ATCD_SHA256};downloadfilename=atcd-${ATCD_VERSION}-${ATCD_TARGET};sha256sum=${ATCD_SHA256} \
+           "
 
 # The ELF machine name readelf must report for this target. A recipe that adds a
 # machine must add its expected value here, or do_install refuses the binary.
@@ -52,30 +83,29 @@ S = "${WORKDIR}"
 # machine-specific, so the whole package is.
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
-# readelf for the architecture check. curl and OpenSSL 3 (ed25519 with -rawin)
-# for the install script: the native ones, so the build host's versions do not
-# matter.
-DEPENDS += "binutils-native curl-native openssl-native"
-
-# The download is the only network access after do_fetch. The track's current
-# release changes with no change to any variable, so the task runs on every
-# build and the image always gets the current release.
-do_compile[network] = "1"
-do_compile[nostamp] = "1"
+# readelf for the architecture check. OpenSSL 3 (ed25519 with -rawin) for the
+# install script: the native one, so the build host's version does not matter.
+# In local mode the script needs no curl.
+DEPENDS += "binutils-native openssl-native"
 
 do_compile() {
     rm -f ${B}/atcd
-    if [ -z "${ATCD_TRACK}" ]; then
-        bbfatal "ATCD_TRACK is empty. Set it to a release track, for example stable."
+    if [ -z "${ATCD_TARGET}" ] || [ -z "${ATCD_SHA256}" ]; then
+        bbfatal "atcd has no pinned release for TARGET_ARCH=${TARGET_ARCH}."
     fi
-    if [ -z "${ATCD_TARGET}" ]; then
-        bbfatal "atcd has no release for TARGET_ARCH=${TARGET_ARCH}."
-    fi
-    bbnote "atcd: install-atcd.sh, track ${ATCD_TRACK}, target ${ATCD_TARGET}"
-    ATC_TRACK="${ATCD_TRACK}" ATC_TARGET="${ATCD_TARGET}" ATC_DOWNLOAD_ONLY="${B}/atcd" \
+    # The file names that the local mode of install-atcd.sh reads.
+    local_dir=${B}/atcd-local
+    mkdir -p $local_dir
+    cp ${WORKDIR}/atcd-release/index.json ${WORKDIR}/atcd-release/index.json.sig $local_dir/
+    cp ${WORKDIR}/atcd-${ATCD_VERSION}-${ATCD_TARGET} $local_dir/atcd-${ATCD_TARGET}
+    bbnote "atcd: install-atcd.sh, track ${ATCD_TRACK}, version ${ATCD_VERSION}, target ${ATCD_TARGET}"
+    ATC_TRACK="${ATCD_TRACK}" ATC_VERSION="${ATCD_VERSION}" ATC_TARGET="${ATCD_TARGET}" \
+        ATC_LOCAL_DIR="$local_dir" ATC_DOWNLOAD_ONLY="${B}/atcd" \
         sh ${WORKDIR}/install-atcd.sh ||
-        bbfatal "install-atcd.sh could not fetch a verified atcd. It needs network \
-access to https://atc.dev."
+        bbfatal "install-atcd.sh refused atcd ${ATCD_VERSION} for ${ATCD_TARGET}. \
+The index in files/atcd-release/ must be the signed index of that release, \
+and ATCD_TRACK, ATCD_VERSION and ATCD_SHA256 must match it."
+    rm -f $local_dir/atcd-${ATCD_TARGET}
 }
 
 do_install() {
@@ -83,7 +113,7 @@ do_install() {
     install -m 0755 ${WORKDIR}/atcd-boot-confirm.sh ${D}${ATCD_GUARD_PATH}
 
     if [ ! -f "${B}/atcd" ]; then
-        bbfatal "no atcd at ${B}/atcd. do_compile did not download it."
+        bbfatal "no atcd at ${B}/atcd. do_compile did not verify one."
     fi
 
     if [ -z "${ATCD_EXPECTED_ELF_MACHINE}" ]; then
