@@ -2,6 +2,7 @@
 #
 # atc-bundle with the panic image in its rootfs slot. It is signed and
 # compatible, so RAUC installs it. The trial boot then panics.
+require recipes-test/atc-test-recipe.inc
 require recipes-core/bundles/atc-bundle.bb
 
 FILESEXTRAPATHS:prepend := "${THISDIR}/../../recipes-core/bundles/files:"

@@ -3,6 +3,7 @@
 # atc-bundle with the hang image in its rootfs slot. It is signed and
 # compatible, so RAUC installs it. The trial boot then stops feeding the
 # watchdog.
+require recipes-test/atc-test-recipe.inc
 require recipes-core/bundles/atc-bundle.bb
 
 FILESEXTRAPATHS:prepend := "${THISDIR}/../../recipes-core/bundles/files:"

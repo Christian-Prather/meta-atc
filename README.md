@@ -113,6 +113,7 @@ whole-disk image written to a running device erases its store and its identity.
 | `ATC_DEPLOY_SSH_KEY` | empty | an SSH public key to install for that account |
 | `ATC_OS_VERSION` | empty | the version that the bundle and `/etc/atc-os-version` carry |
 | `ATC_SLOT_KIB` | `1048576` | the size limit of one rootfs slot, in KiB |
+| `ATC_TEST_RECIPES` | empty | `1` lets the fault bundles and images under `recipes-test/` build. They are signed with `RAUC_KEY_FILE` and do not boot, so set it only with test keys |
 | `ATC_TEGRA_REDUNDANT` | `1` | `0` selects meta-tegra's single-rootfs layout. The A/B targets are then skipped |
 
 Set them in `local.conf`, or in `conf/auto.conf` when a script writes
