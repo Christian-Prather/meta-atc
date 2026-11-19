@@ -53,6 +53,29 @@ INHIBIT_SYSROOT_STRIP = "1"
 ATCD_TRACK = "stable"
 ATCD_VERSION = "0.2.4"
 
+# Follow a track instead of the pin. FOR DEVELOPMENT ONLY. See "Follow a track"
+# in README.md.
+#
+# ATCD_FOLLOW_TRACK names a track, for example "nightly". Each parse then reads
+# the current signed index of that track from ATCD_BASE_URL, like
+# SRCREV = "${AUTOREV}". The recipe sets ATCD_TRACK to that track, and takes
+# ATCD_VERSION and both ATCD_SHA256 values from the index, so a new release
+# changes the task signature and rebuilds atcd and the image. The index and its
+# signature go to ATCD_FOLLOW_DIR, one directory for each version, and
+# do_compile checks them with install-atcd.sh as for a pin.
+#
+# The parse needs network access. With BB_NO_NETWORK = "1", or a host that
+# BB_ALLOWED_NETWORKS does not name, bitbake skips the recipe. The same layer
+# commit gives a new atcd after each release, so do not use this for a
+# product image.
+ATCD_FOLLOW_TRACK ?= ""
+ATCD_BASE_URL ?= "https://atc.dev/agency"
+ATCD_FOLLOW_DIR ?= "${DL_DIR}/atcd-follow"
+# The parse writes ATCD_FOLLOW_DIR, also in the workers of fakeroot tasks.
+# pseudo must not track it, or a file that a later parse replaces makes pseudo
+# abort with an inode mismatch.
+PSEUDO_IGNORE_PATHS .= ",${ATCD_FOLLOW_DIR}"
+
 # The release target for this build's architecture.
 ATCD_TARGET = ""
 ATCD_TARGET:x86-64 = "linux-x86_64-musl"
@@ -104,6 +127,93 @@ python () {
 }
 do_fetch[vardepsexclude] += "ATCD_NETRC_DIR FETCHCMD_wget"
 
+# The release target of each ATCD_SHA256 override.
+ATCD_FOLLOW_TARGETS = "x86-64:linux-x86_64-musl aarch64:linux-aarch64-musl"
+
+def atcd_follow_track(d):
+    import json, os, re, tempfile, urllib.request
+
+    # Parse this recipe again on every run, as AUTOREV does, so that the next
+    # build sees a new release.
+    d.setVar('__BB_DONT_CACHE', '1')
+    track = d.getVar('ATCD_FOLLOW_TRACK')
+    if not re.fullmatch(r'[a-z0-9][a-z0-9-]*', track):
+        raise bb.parse.SkipRecipe('ATCD_FOLLOW_TRACK is %r, not a track name such as "nightly"' % track)
+    url = '%s/%s/index.json' % (d.getVar('ATCD_BASE_URL').rstrip('/'), track)
+    try:
+        bb.fetch2.check_network_access(d, 'atcd: read the %s index' % track, url)
+    except bb.fetch2.NetworkAccess as e:
+        raise bb.parse.SkipRecipe('ATCD_FOLLOW_TRACK reads %s at parse time, '
+                                  'and network access is off: %s' % (url, e))
+
+    def get(u):
+        with urllib.request.urlopen(u, timeout=60) as r:
+            return r.read()
+
+    # A release can replace the index between two reads. Read it again after
+    # the signature, and use the pair only when both index reads are equal.
+    for _ in range(3):
+        try:
+            index, sig, again = get(url), get(url + '.sig'), get(url)
+        except Exception as e:
+            raise bb.parse.SkipRecipe('atcd: cannot read %s: %s' % (url, e))
+        if index == again:
+            break
+    else:
+        raise bb.parse.SkipRecipe('atcd: %s changed during three reads. Run bitbake again.' % url)
+
+    try:
+        doc = json.loads(index)
+        if doc['track'] != track:
+            raise ValueError('the index is for track %s' % doc['track'])
+        version = doc['version']
+        if not re.fullmatch(r'[0-9A-Za-z][0-9A-Za-z.+_-]*', version):
+            raise ValueError('bad version %r' % version)
+        digests = {}
+        for pair in d.getVar('ATCD_FOLLOW_TARGETS').split():
+            override, target = pair.split(':', 1)
+            digest = doc['artifacts']['agency/atcd'][target]['digest']
+            if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
+                raise ValueError('bad digest %r for %s' % (digest, target))
+            digests[override] = digest.split(':', 1)[1]
+    except (ValueError, KeyError, TypeError, AttributeError) as e:
+        raise bb.parse.SkipRecipe('atcd: cannot use the index at %s: %s' % (url, e))
+
+    # FILESPATH finds atcd-release/ here before the pinned copy in files/.
+    # install-atcd.sh still checks the signature in do_compile.
+    release = os.path.join(d.getVar('ATCD_FOLLOW_DIR'), track, version)
+    dest = os.path.join(release, 'atcd-release')
+    bb.utils.mkdirhier(dest)
+    # bitbake parses this recipe again for each task. Replace a file only when
+    # its bytes differ, so a parse does not touch the files under a task.
+    for name, data in (('index.json', index), ('index.json.sig', sig)):
+        path = os.path.join(dest, name)
+        try:
+            with open(path, 'rb') as f:
+                if f.read() == data:
+                    continue
+        except FileNotFoundError:
+            pass
+        fd, tmp = tempfile.mkstemp(dir=dest, prefix='.tmp-')
+        try:
+            with os.fdopen(fd, 'wb') as f:
+                f.write(data)
+            os.replace(tmp, path)
+        except BaseException:
+            os.unlink(tmp)
+            raise
+    d.prependVar('FILESEXTRAPATHS', release + ':')
+    d.setVar('ATCD_TRACK', track)
+    d.setVar('ATCD_VERSION', version)
+    for override, digest in digests.items():
+        d.setVar('ATCD_SHA256:' + override, digest)
+    bb.debug(1, 'atcd: following %s at %s' % (track, version))
+
+python () {
+    if d.getVar('ATCD_FOLLOW_TRACK'):
+        atcd_follow_track(d)
+}
+
 # The ELF machine name readelf must report for this target. A recipe that adds a
 # machine must add its expected value here, or do_install refuses the binary.
 ATCD_EXPECTED_ELF_MACHINE ?= ""
@@ -145,7 +255,7 @@ do_compile() {
         ATC_LOCAL_DIR="$local_dir" ATC_DOWNLOAD_ONLY="${B}/atcd" \
         sh ${WORKDIR}/install-atcd.sh ||
         bbfatal "install-atcd.sh refused atcd ${ATCD_VERSION} for ${ATCD_TARGET}. \
-The index in files/atcd-release/ must be the signed index of that release, \
+The index in atcd-release/ must be the signed index of that release, \
 and ATCD_TRACK, ATCD_VERSION and ATCD_SHA256 must match it."
     rm -f $local_dir/atcd-${ATCD_TARGET}
 }

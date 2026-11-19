@@ -209,6 +209,23 @@ if search '^[^#]*ATCD_NETRC_DIR' "$RECIPE" > /dev/null; then
 do_fetch signature; builders with different paths would not share sstate"
 fi
 
+# 3i. Following a track is opt-in. The default build uses the pin, so a layer
+#     commit always builds the same atcd and a build with no network works.
+#     The follow mode parses the recipe on every run, as AUTOREV does, or a
+#     cached parse keeps the old release.
+search '^ATCD_FOLLOW_TRACK \?= ""$' "$RECIPE" > /dev/null ||
+  fail "the atcd recipe does not default ATCD_FOLLOW_TRACK to off (?= \"\")"
+if search '^ATCD_FOLLOW_TRACK (=|:=|\?\?=|\?= "[^"])' "$RECIPE" > /dev/null; then
+  fail "the atcd recipe turns ATCD_FOLLOW_TRACK on; a layer commit would no longer pin atcd"
+fi
+search "__BB_DONT_CACHE" "$RECIPE" > /dev/null ||
+  fail "the atcd follow mode does not set __BB_DONT_CACHE; a cached parse would keep an old release"
+search '^PSEUDO_IGNORE_PATHS \.= ",\$\{ATCD_FOLLOW_DIR\}"' "$RECIPE" > /dev/null ||
+  fail "the atcd follow mode does not add ATCD_FOLLOW_DIR to PSEUDO_IGNORE_PATHS; \
+pseudo aborts when a parse replaces a file it tracks"
+search "check_network_access" "$RECIPE" > /dev/null ||
+  fail "the atcd follow mode does not ask bitbake for network access; BB_NO_NETWORK would not stop it"
+
 # 3h. The atcd binary is closed-source, and a product must accept its license.
 #     The binary is in ${PN} under CLOSED, and the recipe carries
 #     LICENSE_FLAGS, so bitbake skips it unless LICENSE_FLAGS_ACCEPTED names the

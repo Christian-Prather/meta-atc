@@ -119,6 +119,40 @@ works with `BB_NO_NETWORK = "1"`.
 
 For another track, replace `stable` in the URLs and set `ATCD_TRACK` to match.
 
+### Follow a track (development only)
+
+To get each new atcd release with no pin change, name the track in
+`local.conf`:
+
+```
+ATCD_FOLLOW_TRACK = "nightly"
+```
+
+Each parse then reads the current signed index of that track, as
+`SRCREV = "${AUTOREV}"` reads a branch head. The recipe sets `ATCD_TRACK` to
+that track, and takes `ATCD_VERSION` and both `ATCD_SHA256` values from the
+index. Do not set `ATCD_TRACK` in `local.conf`: the recipe pins it, so the
+recipe's value wins. A new release changes the task
+signature, so the next build rebuilds atcd and the image. An unchanged release
+reuses sstate. The index and its signature are kept in
+`${DL_DIR}/atcd-follow/<track>/<version>/`, and `do_compile` checks the
+signature with `install-atcd.sh`, as for a pin.
+
+Know the cost before you turn it on:
+
+- The same layer commit builds a different atcd after each release. You
+  cannot rebuild an old image from its commit, so do not use this for a
+  product image. Read the atcd version that a build took from its log, or with
+  `bitbake -e atcd | grep ^ATCD_VERSION=`.
+- The parse needs network access. With `BB_NO_NETWORK = "1"`, or with
+  `BB_ALLOWED_NETWORKS` set without `atc.dev`, bitbake skips the recipe and
+  names the reason.
+- bitbake parses the recipe on each run, so each run reads the index once.
+
+`ATCD_BASE_URL` (default `https://atc.dev/agency`) and `ATCD_FOLLOW_DIR`
+(default `${DL_DIR}/atcd-follow`) change where the index comes from and where
+it is kept.
+
 ### Fetch credential
 
 The atcd download can carry a credential. Today the credential is optional:

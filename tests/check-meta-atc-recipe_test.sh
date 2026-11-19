@@ -104,6 +104,11 @@ SRC_URI = "file://atcd-boot-confirm.sh \
            "
 ATCD_NETRC_DIR ?= ""
 do_fetch[vardepsexclude] += "ATCD_NETRC_DIR FETCHCMD_wget"
+ATCD_FOLLOW_TRACK ?= ""
+PSEUDO_IGNORE_PATHS .= ",${ATCD_FOLLOW_DIR}"
+def atcd_follow_track(d):
+    d.setVar('__BB_DONT_CACHE', '1')
+    bb.fetch2.check_network_access(d, 'atcd', 'https://atc.dev/agency/nightly/index.json')
 do_compile() {
     ATC_TRACK="${ATCD_TRACK}" ATC_VERSION="${ATCD_VERSION}" ATC_TARGET="${ATCD_TARGET}" \
         ATC_LOCAL_DIR="$local_dir" ATC_DOWNLOAD_ONLY="${B}/atcd" \
@@ -373,6 +378,20 @@ expect pass "a [nostamp] name in a comment passes" "$d16b"
     '/^do_fetch\[vardepsexclude\]/d'
   atcd_recipe_case netrc-excluded-elsewhere "an ATCD_NETRC_DIR excluded from another task only is caught" \
     's/^do_fetch\[vardepsexclude\]/do_unpack[vardepsexclude]/'
+  atcd_recipe_case follow-on "a recipe that follows a track by default is caught" \
+    's/^ATCD_FOLLOW_TRACK ?= ""/ATCD_FOLLOW_TRACK = "nightly"/'
+  atcd_recipe_case follow-weak-on "a recipe that follows a track with ?= is caught" \
+    's/^ATCD_FOLLOW_TRACK ?= ""/ATCD_FOLLOW_TRACK ?= "nightly"/'
+  atcd_recipe_case follow-no-default "a recipe with no ATCD_FOLLOW_TRACK default is caught" \
+    '/^ATCD_FOLLOW_TRACK/d'
+  atcd_recipe_case follow-also-on "a second ATCD_FOLLOW_TRACK that turns it on is caught" \
+    '$a ATCD_FOLLOW_TRACK = "nightly"'
+  atcd_recipe_case follow-cached "a follow mode with a cached parse is caught" \
+    '/__BB_DONT_CACHE/d'
+  atcd_recipe_case follow-no-network-check "a follow mode that skips the network check is caught" \
+    '/check_network_access/d'
+  atcd_recipe_case follow-pseudo-tracked "a follow dir that pseudo tracks is caught" \
+    '/^PSEUDO_IGNORE_PATHS/d'
 }
 d16c="$tmp/no-netrc"
 make_fixture "$d16c"
