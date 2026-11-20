@@ -8,8 +8,8 @@ baked into an image drifts from render_systemd_unit. First-boot \
 HOMEPAGE = "https://github.com/Christian-Prather/meta-atc"
 # Two licenses, one for each package. The atcd binary in ${PN} is
 # closed-source: CLOSED, Yocto's name for a license with no text to ship. The
-# guard in ${PN}-boot-confirm is a copy of an atc script, which is MIT OR
-# Apache-2.0. install-atcd.sh only runs at build time and is in no package.
+# guard in ${PN}-boot-confirm is an atc script, which is MIT OR Apache-2.0.
+# install-atcd.sh only runs at build time and is in no package.
 #
 # license.bbclass and license_image.bbclass expect no text for CLOSED, so
 # LIC_FILES_CHKSUM names the guard's license only.
@@ -50,8 +50,8 @@ INHIBIT_SYSROOT_STRIP = "1"
 
 # The track and version of the pinned release. Both must equal the values in
 # files/atcd-release/index.json, or install-atcd.sh refuses the index.
-ATCD_TRACK = "stable"
-ATCD_VERSION = "0.2.4"
+ATCD_TRACK = "nightly"
+ATCD_VERSION = "0.2.6-rc.202611202013.g2c7d0dfbc381"
 
 # Follow a track instead of the pin. FOR DEVELOPMENT ONLY. See "Follow a track"
 # in README.md.
@@ -59,7 +59,8 @@ ATCD_VERSION = "0.2.4"
 # ATCD_FOLLOW_TRACK names a track, for example "nightly". Each parse then reads
 # the current signed index of that track from ATCD_BASE_URL, like
 # SRCREV = "${AUTOREV}". The recipe sets ATCD_TRACK to that track, and takes
-# ATCD_VERSION and both ATCD_SHA256 values from the index, so a new release
+# ATCD_VERSION, both ATCD_SHA256 values and ATCD_GUARD_SHA256 from the index.
+# A release with no guard entry skips the recipe. So a new release
 # changes the task signature and rebuilds atcd and the image. The index and its
 # signature go to ATCD_FOLLOW_DIR, one directory for each version, and
 # do_compile checks them with install-atcd.sh as for a pin.
@@ -84,23 +85,37 @@ ATCD_TARGET:aarch64 = "linux-aarch64-musl"
 # The sha256 of the atcd binary of ATCD_VERSION for each target. It is the
 # "digest" of the agency/atcd entry in the signed index, and the blob address.
 ATCD_SHA256 = ""
-ATCD_SHA256:x86-64 = "064ae9ad001ba1a57fcb88ef3c33b8ae4c1cf05b37260b2bb2228eb289e9f82a"
-ATCD_SHA256:aarch64 = "9cfeda114c321a48b55eb397866dd9f786e7caf8ec490506fae9ccc552d6313d"
+ATCD_SHA256:x86-64 = "0eec49f3fe072aa333d4c989c45dfdf11ae096e9a935ba17eb8520df52a3e588"
+ATCD_SHA256:aarch64 = "539859d551eef311890aee625ad65a26b7eaee86ee3bf2ed68a9bd264463a5e8"
+
+# The boot-confirm guard of the same release. It is the "digest" of the
+# agency/atcd-boot-confirm entry, target "any", in the signed index. do_compile
+# refuses a guard that the signed index does not name. In follow mode the
+# recipe takes it from the index, like ATCD_SHA256.
+ATCD_GUARD_SHA256 = "f91e86a53f5c5b6d7728bf0745f215e9f7bd4e832790b2ed56a068b6ecf549f6"
+
+# The sha256 of install-atcd.sh, the script that verifies the index. It is
+# pinned here in both modes: a script that came from the index it verifies
+# would prove nothing. It is the "digest" of agency/install-atcd in a signed
+# index. To take a new one, see "atcd" in README.md.
+ATCD_INSTALLER_SHA256 = "394dbf8f59806ecddf911946c5565605ab8c2a04a4b84385bdb2de966e382a4b"
+ATCD_GUARD_FILE = "atcd-boot-confirm-${ATCD_GUARD_SHA256}.sh"
+ATCD_INSTALLER_FILE = "install-atcd-${ATCD_INSTALLER_SHA256}.sh"
 
 # atcd has a release for these hosts only. On any other host bitbake skips the
 # recipe at parse time, instead of a failed fetch of an empty URL.
 COMPATIBLE_HOST = "(x86_64|aarch64).*-linux.*"
 
-# The guard and install-atcd.sh are copies of atc's own scripts. The atc
-# maintainers keep them byte-for-byte equal to the originals. The index files
-# are the signed index of the pinned release, byte for byte as the origin
-# served it. The last entry is the binary. Its file name holds the version and
-# the target, so two pins never share one file in DL_DIR.
-SRC_URI = "file://atcd-boot-confirm.sh \
-           file://install-atcd.sh \
-           file://atcd-release/index.json \
+# The index files are the signed index of the pinned release, byte for byte
+# as the origin served it. The guard, install-atcd.sh and the binary come from
+# the release blob store by sha256, and do_fetch checks each one. Each file
+# name holds its sha256 or the version and the target, so two pins never share
+# one file in DL_DIR.
+SRC_URI = "file://atcd-release/index.json \
            file://atcd-release/index.json.sig \
            https://atc.dev/agency/blobs/sha256/${ATCD_SHA256};downloadfilename=atcd-${ATCD_VERSION}-${ATCD_TARGET};sha256sum=${ATCD_SHA256} \
+           https://atc.dev/agency/blobs/sha256/${ATCD_GUARD_SHA256};downloadfilename=${ATCD_GUARD_FILE};sha256sum=${ATCD_GUARD_SHA256} \
+           https://atc.dev/agency/blobs/sha256/${ATCD_INSTALLER_SHA256};downloadfilename=${ATCD_INSTALLER_FILE};sha256sum=${ATCD_INSTALLER_SHA256} \
            "
 
 # An optional fetch credential. See "Fetch credential" in README.md.
@@ -176,6 +191,9 @@ def atcd_follow_track(d):
             if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
                 raise ValueError('bad digest %r for %s' % (digest, target))
             digests[override] = digest.split(':', 1)[1]
+        guard = doc['artifacts']['agency/atcd-boot-confirm']['any']['digest']
+        if not re.fullmatch(r'sha256:[0-9a-f]{64}', guard):
+            raise ValueError('bad digest %r for the boot-confirm guard' % guard)
     except (ValueError, KeyError, TypeError, AttributeError) as e:
         raise bb.parse.SkipRecipe('atcd: cannot use the index at %s: %s' % (url, e))
 
@@ -207,6 +225,7 @@ def atcd_follow_track(d):
     d.setVar('ATCD_VERSION', version)
     for override, digest in digests.items():
         d.setVar('ATCD_SHA256:' + override, digest)
+    d.setVar('ATCD_GUARD_SHA256', guard.split(':', 1)[1])
     bb.debug(1, 'atcd: following %s at %s' % (track, version))
 
 python () {
@@ -253,16 +272,24 @@ do_compile() {
     bbnote "atcd: install-atcd.sh, track ${ATCD_TRACK}, version ${ATCD_VERSION}, target ${ATCD_TARGET}"
     ATC_TRACK="${ATCD_TRACK}" ATC_VERSION="${ATCD_VERSION}" ATC_TARGET="${ATCD_TARGET}" \
         ATC_LOCAL_DIR="$local_dir" ATC_DOWNLOAD_ONLY="${B}/atcd" \
-        sh ${WORKDIR}/install-atcd.sh ||
+        sh ${WORKDIR}/${ATCD_INSTALLER_FILE} ||
         bbfatal "install-atcd.sh refused atcd ${ATCD_VERSION} for ${ATCD_TARGET}. \
 The index in atcd-release/ must be the signed index of that release, \
 and ATCD_TRACK, ATCD_VERSION and ATCD_SHA256 must match it."
     rm -f $local_dir/atcd-${ATCD_TARGET}
+    # install-atcd.sh verified the signature of this index. It is compact JSON
+    # with sorted keys, so the guard entry starts with this exact text. do_fetch
+    # checked that the guard file has this sha256.
+    grep -qF '"agency/atcd-boot-confirm":{"any":{"digest":"sha256:${ATCD_GUARD_SHA256}"' \
+        $local_dir/index.json ||
+        bbfatal "the signed index of atcd ${ATCD_VERSION} does not name the guard \
+${ATCD_GUARD_SHA256}. ATCD_GUARD_SHA256 must be the digest of \
+agency/atcd-boot-confirm in atcd-release/index.json."
 }
 
 do_install() {
     install -d ${D}${ATCD_LIBEXEC}
-    install -m 0755 ${WORKDIR}/atcd-boot-confirm.sh ${D}${ATCD_GUARD_PATH}
+    install -m 0755 ${WORKDIR}/${ATCD_GUARD_FILE} ${D}${ATCD_GUARD_PATH}
 
     if [ ! -f "${B}/atcd" ]; then
         bbfatal "no atcd at ${B}/atcd. do_compile did not verify one."
