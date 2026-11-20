@@ -53,15 +53,13 @@ make_fixture() {
   cp "$GATE" "$root/meta-atc/scripts/check-meta-atc-recipe.sh"
   chmod +x "$root/meta-atc/scripts/check-meta-atc-recipe.sh"
 
-  printf '%s\n' '#!/usr/bin/env sh' 'echo guard' \
-    > "$root/meta-atc/recipes-core/atc/files/atcd-boot-confirm.sh"
-  printf '%s\n' '#!/bin/sh' 'echo install' > "$root/meta-atc/recipes-core/atc/files/install-atcd.sh"
-
   # The signed index of the pinned release: one line of compact JSON, as the
   # origin serves it. The agency/atc entry holds digests that must not satisfy
   # the agency/atcd check.
   mkdir -p "$root/meta-atc/recipes-core/atc/files/atcd-release"
   printf '%s' '{"artifacts":{"agency/atc":{"linux-x86_64-musl":{"digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","url":"u"}},' \
+    '"agency/atcd-boot-confirm":{"any":{"digest":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","size":1,"url":"u"}},' \
+    '"agency/install-atcd":{"any":{"digest":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","size":1,"url":"u"}},' \
     '"agency/atcd":{"linux-aarch64-musl":{"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","size":1,"url":"u"},' \
     '"linux-x86_64-musl":{"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":1,"url":"u"}}},' \
     '"track":"stable","version":"0.2.4"}' > "$root/meta-atc/recipes-core/atc/files/atcd-release/index.json"
@@ -96,11 +94,15 @@ ATCD_VERSION = "0.2.4"
 ATCD_SHA256 = ""
 ATCD_SHA256:x86-64 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 ATCD_SHA256:aarch64 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-SRC_URI = "file://atcd-boot-confirm.sh \
-           file://install-atcd.sh \
-           file://atcd-release/index.json \
+ATCD_GUARD_SHA256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+ATCD_INSTALLER_SHA256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+ATCD_GUARD_FILE = "atcd-boot-confirm-${ATCD_GUARD_SHA256}.sh"
+ATCD_INSTALLER_FILE = "install-atcd-${ATCD_INSTALLER_SHA256}.sh"
+SRC_URI = "file://atcd-release/index.json \
            file://atcd-release/index.json.sig \
            https://atc.dev/agency/blobs/sha256/${ATCD_SHA256};downloadfilename=atcd-${ATCD_VERSION}-${ATCD_TARGET};sha256sum=${ATCD_SHA256} \
+           https://atc.dev/agency/blobs/sha256/${ATCD_GUARD_SHA256};downloadfilename=${ATCD_GUARD_FILE};sha256sum=${ATCD_GUARD_SHA256} \
+           https://atc.dev/agency/blobs/sha256/${ATCD_INSTALLER_SHA256};downloadfilename=${ATCD_INSTALLER_FILE};sha256sum=${ATCD_INSTALLER_SHA256} \
            "
 ATCD_NETRC_DIR ?= ""
 do_fetch[vardepsexclude] += "ATCD_NETRC_DIR FETCHCMD_wget"
@@ -112,9 +114,12 @@ def atcd_follow_track(d):
 do_compile() {
     ATC_TRACK="${ATCD_TRACK}" ATC_VERSION="${ATCD_VERSION}" ATC_TARGET="${ATCD_TARGET}" \
         ATC_LOCAL_DIR="$local_dir" ATC_DOWNLOAD_ONLY="${B}/atcd" \
-        sh ${WORKDIR}/install-atcd.sh
+        sh ${WORKDIR}/${ATCD_INSTALLER_FILE}
+    grep -qF '"agency/atcd-boot-confirm":{"any":{"digest":"sha256:${ATCD_GUARD_SHA256}"' \
+        $local_dir/index.json
 }
 do_install() {
+    install -m 0755 ${WORKDIR}/${ATCD_GUARD_FILE} ${D}${ATCD_GUARD_PATH}
     actual_machine=$(readelf -h "${B}/atcd")
 }
 EOF
@@ -307,6 +312,39 @@ atcd_recipe_case() { # <name> <description> <sed expression>
   atcd_recipe_case no-version-pin "an install-atcd.sh run with no ATC_VERSION is caught" \
     's/ATC_VERSION="${ATCD_VERSION}" //'
 }
+
+# 15b. The guard and install-atcd.sh come from the release by sha256, and the
+#      layer keeps no copy. Each mutation below breaks one part.
+# shellcheck disable=SC2016
+{
+  atcd_recipe_case no-guard-pin "a recipe with no ATCD_GUARD_SHA256 is caught" '/^ATCD_GUARD_SHA256 = /d'
+  atcd_recipe_case short-guard-pin "a short ATCD_GUARD_SHA256 is caught" \
+    's/^ATCD_GUARD_SHA256 = .*/ATCD_GUARD_SHA256 = "eeee"/'
+  atcd_recipe_case guard-off-index "an ATCD_GUARD_SHA256 that is not the guard digest is caught" \
+    's/^ATCD_GUARD_SHA256 = .*/ATCD_GUARD_SHA256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"/'
+  atcd_recipe_case guard-not-fetched "a guard missing from SRC_URI is caught" \
+    '/${ATCD_GUARD_SHA256};downloadfilename/d'
+  atcd_recipe_case guard-no-sha256sum "a guard URL with no sha256sum is caught" \
+    's/;sha256sum=${ATCD_GUARD_SHA256}//'
+  atcd_recipe_case no-installer-pin "a recipe with no ATCD_INSTALLER_SHA256 is caught" \
+    '/^ATCD_INSTALLER_SHA256 = /d'
+  atcd_recipe_case installer-not-fetched "an installer missing from SRC_URI is caught" \
+    '/${ATCD_INSTALLER_SHA256};downloadfilename/d'
+  atcd_recipe_case installer-other-file "an install-atcd.sh run of another file is caught" \
+    's|sh ${WORKDIR}/${ATCD_INSTALLER_FILE}|sh ${WORKDIR}/install-atcd.sh|'
+  atcd_recipe_case no-guard-check "a do_compile without the guard check is caught" \
+    '/grep -qF .*agency\/atcd-boot-confirm/d'
+  atcd_recipe_case guard-other-file "a do_install of another guard file is caught" \
+    's|${WORKDIR}/${ATCD_GUARD_FILE}|${WORKDIR}/atcd-boot-confirm.sh|'
+  atcd_recipe_case installer-from-index "a follow mode that sets the installer digest is caught" \
+    "\$a \\    d.setVar('ATCD_INSTALLER_SHA256', digest)"
+}
+for copy in atcd-boot-confirm.sh install-atcd.sh; do
+  dcopy="$tmp/copy-$copy"
+  make_fixture "$dcopy"
+  printf '%s\n' '#!/bin/sh' > "$dcopy/meta-atc/recipes-core/atc/files/$copy"
+  expect fail "a layer copy of $copy is caught" "$dcopy"
+done
 
 # 15c. The atcd binary is closed-source, and a product must accept its license.
 #      Each mutation below breaks one part: the license names, the flag, or the

@@ -17,8 +17,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAYER="$(cd "${META_ATC_ROOT:-$SCRIPT_DIR/..}" && pwd)"
-GUARD_COPY="$LAYER/recipes-core/atc/files/atcd-boot-confirm.sh"
-INSTALL_COPY="$LAYER/recipes-core/atc/files/install-atcd.sh"
 RECIPE="$LAYER/recipes-core/atc/atcd_0.1.0.bb"
 IMAGE="$LAYER/recipes-core/images/atc-image.bb"
 LAYER_CONF="$LAYER/conf/layer.conf"
@@ -67,7 +65,7 @@ search_optional() {
   search "$@" || true
 }
 
-for f in "$GUARD_COPY" "$INSTALL_COPY" "$RECIPE" "$IMAGE" "$LAYER_CONF" "$PIN_FILE" "$TEGRA_INC"; do
+for f in "$RECIPE" "$IMAGE" "$LAYER_CONF" "$PIN_FILE" "$TEGRA_INC"; do
   [ -f "$f" ] || fail "missing required file: $f"
 done
 
@@ -116,7 +114,7 @@ fi
 #     and the binary's sha256. Any other way skips those checks. Local mode
 #     reads the files that do_fetch got, so do_compile needs no network.
 #     The command spans continuation lines, so join them first (see 3d).
-rg -q '^[^#]*ATC_VERSION="\$\{ATCD_VERSION\}".*ATC_LOCAL_DIR=.*ATC_DOWNLOAD_ONLY=.*install-atcd\.sh' \
+rg -q '^[^#]*ATC_VERSION="\$\{ATCD_VERSION\}".*ATC_LOCAL_DIR=.*ATC_DOWNLOAD_ONLY=.*\$\{WORKDIR\}/\$\{ATCD_INSTALLER_FILE\}' \
   < <(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba' -e '}' "$RECIPE") ||
   fail "the recipe does not verify atcd with install-atcd.sh in local, download-only \
 mode, pinned to ATCD_VERSION"
@@ -191,6 +189,34 @@ for pair in x86-64:linux-x86_64-musl aarch64:linux-aarch64-musl; do
   rg -q -e "\"${target}\":\\{[^{}]*\"digest\":\"sha256:${sha}\"" <<< "$atcd_entry" ||
     fail "ATCD_SHA256:${arch} is not the digest of agency/atcd ${target} in the index in atcd-release/"
 done
+
+# 3j. The guard and install-atcd.sh come from the release by sha256. The
+#     layer keeps no copy of either: a copy drifts from the release it runs
+#     with. The guard sha256 must be the agency/atcd-boot-confirm digest in the
+#     pinned index, and do_compile must check it against the verified index.
+#     install-atcd.sh verifies the index, so its sha256 is pinned in the layer
+#     and the follow mode never takes it from an index.
+for copy in atcd-boot-confirm.sh install-atcd.sh; do
+  [ ! -e "$LAYER/recipes-core/atc/files/$copy" ] ||
+    fail "the layer keeps a copy of $copy in recipes-core/atc/files. Fetch it from the release by sha256"
+done
+for var in ATCD_GUARD_SHA256 ATCD_INSTALLER_SHA256; do
+  search "^${var} = \"[0-9a-f]{64}\"$" "$RECIPE" > /dev/null ||
+    fail "the atcd recipe does not pin ${var} to a 64-hex sha256"
+  search "^[^#]*https://[^;\"]*/\\\$\\{${var}\\};([^ \"]*;)?sha256sum=\\\$\\{${var}\\}" "$RECIPE" > /dev/null ||
+    fail "the atcd recipe does not fetch \${${var}} in SRC_URI by its address with sha256sum=\${${var}}"
+done
+guard_sha="$(search_optional '^ATCD_GUARD_SHA256 = "[0-9a-f]{64}"$' "$RECIPE" | sed -n 's/.*"\(.*\)".*/\1/p')"
+[ -z "$guard_sha" ] ||
+  search "\"agency/atcd-boot-confirm\":\\{\"any\":\\{\"digest\":\"sha256:${guard_sha}\"" "$index" > /dev/null ||
+  fail "ATCD_GUARD_SHA256 is not the digest of agency/atcd-boot-confirm any in the index in atcd-release/"
+search "^[^#]*grep -qF '\"agency/atcd-boot-confirm\":\\{\"any\":\\{\"digest\":\"sha256:\\\$\\{ATCD_GUARD_SHA256\\}\"'" "$RECIPE" > /dev/null ||
+  fail "do_compile does not check ATCD_GUARD_SHA256 against the guard entry of the verified index"
+search '^[^#]*install -m 0755 \$\{WORKDIR\}/\$\{ATCD_GUARD_FILE\} ' "$RECIPE" > /dev/null ||
+  fail "do_install does not install the guard that do_fetch got by ATCD_GUARD_SHA256"
+if search "^[^#]*setVar\\('ATCD_INSTALLER" "$RECIPE" > /dev/null; then
+  fail "the follow mode sets ATCD_INSTALLER_SHA256. The installer verifies the index, so it must not come from one"
+fi
 
 # 3g. The fetch credential stays out of the metadata. A user= or pswd= URL
 #     parameter, or a user:password@ in the URL, puts the secret in SRC_URI,
