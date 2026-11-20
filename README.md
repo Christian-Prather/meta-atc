@@ -76,17 +76,25 @@ recipe pins, not the newest release. `recipes-core/atc/atcd_0.1.0.bb` pins
 the track, the version and the sha256 of each target's binary:
 
 ```
-ATCD_TRACK = "stable"
-ATCD_VERSION = "0.2.4"
-ATCD_SHA256:x86-64 = "064ae9ad..."
-ATCD_SHA256:aarch64 = "9cfeda11..."
+ATCD_TRACK = "nightly"
+ATCD_VERSION = "0.2.6-rc.202611202013.g2c7d0dfbc381"
+ATCD_SHA256:x86-64 = "0eec49f3..."
+ATCD_SHA256:aarch64 = "539859d5..."
+ATCD_GUARD_SHA256 = "f91e86a5..."
+ATCD_INSTALLER_SHA256 = "394dbf8f..."
 ```
 
-`do_fetch` downloads the binary from `https://atc.dev/agency/blobs/sha256/<sha256>`
-and checks its sha256. `do_compile` then runs `install-atcd.sh` with no network
-access, against the signed index of the release in
-`recipes-core/atc/files/atcd-release/`. The script checks the index signature,
-the track, the version and the binary's sha256 before the recipe installs it.
+`do_fetch` downloads three files from `https://atc.dev/agency/blobs/sha256/<sha256>`
+and checks the sha256 of each: the binary, the boot-confirm guard and
+`install-atcd.sh`. The layer keeps no copy of the guard or of the script.
+`do_compile` then runs `install-atcd.sh` with no network access, against the
+signed index of the release in `recipes-core/atc/files/atcd-release/`. The
+script checks the index signature, the track, the version and the binary's
+sha256. `do_compile` then checks that the signed index names the guard's
+sha256, so the guard is the one of the same release.
+
+`ATCD_INSTALLER_SHA256` stays pinned in the layer, also when you follow a
+track: the script verifies the index, so it must not come from one.
 
 The pin is in the task signature. A new pin rebuilds atcd and the images. An
 unchanged pin reuses sstate. With the binary in `DL_DIR` or a mirror, the build
@@ -103,16 +111,19 @@ works with `BB_NO_NETWORK = "1"`.
    curl -fsSLO https://atc.dev/agency/stable/index.json.sig
    ```
 
-2. Read the version and the two atcd digests from the index:
+2. Read the version and the digests from the index:
 
    ```sh
-   python3 -c 'import json; d = json.load(open("index.json")); print(d["track"], d["version"]); [print(t, e["digest"]) for t, e in sorted(d["artifacts"]["agency/atcd"].items())]'
+   python3 -c 'import json; d = json.load(open("index.json")); print(d["track"], d["version"]); [print(p, t, e["digest"]) for p in ("agency/atcd", "agency/atcd-boot-confirm", "agency/install-atcd") for t, e in sorted(d["artifacts"][p].items())]'
    ```
 
 3. Set `ATCD_TRACK` and `ATCD_VERSION` to those values. Set
-   `ATCD_SHA256:x86-64` to the `linux-x86_64-musl` digest and
-   `ATCD_SHA256:aarch64` to the `linux-aarch64-musl` digest, without the
-   `sha256:` prefix.
+   `ATCD_SHA256:x86-64` to the `linux-x86_64-musl` digest,
+   `ATCD_SHA256:aarch64` to the `linux-aarch64-musl` digest and
+   `ATCD_GUARD_SHA256` to the `agency/atcd-boot-confirm` digest, without the
+   `sha256:` prefix. Change `ATCD_INSTALLER_SHA256` only to take a new
+   `install-atcd.sh`. Read the script at
+   `https://atc.dev/agency/blobs/sha256/<sha256>` before you pin it.
 
 4. Run `tests/run.sh`. The recipe gate fails when the recipe and the index do
    not agree. The build checks the signature.
@@ -131,7 +142,8 @@ ATCD_FOLLOW_TRACK = "nightly"
 Each parse then reads the current signed index of that track, as
 `SRCREV = "${AUTOREV}"` reads a branch head. The recipe sets `ATCD_TRACK` to
 that track, and takes `ATCD_VERSION` and both `ATCD_SHA256` values from the
-index. Do not set `ATCD_TRACK` in `local.conf`: the recipe pins it, so the
+index, and `ATCD_GUARD_SHA256` from its `agency/atcd-boot-confirm` entry.
+A release with no guard entry skips the recipe. Do not set `ATCD_TRACK` in `local.conf`: the recipe pins it, so the
 recipe's value wins. A new release changes the task
 signature, so the next build rebuilds atcd and the image. An unchanged release
 reuses sstate. The index and its signature are kept in
