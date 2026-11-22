@@ -238,9 +238,11 @@ grep -qE '^ *exec systemctl --no-block reboot$' "$OS_DIR/atc-os-trial-deadline" 
 grep -qxF 'if [ "$trial" != "$slot" ]; then' "$OS_DIR/atc-os-trial-deadline" ||
   fail "the trial deadline reboots a slot that is not on trial, which loops" \
     "every 15 minutes on a lost boot environment"
-grep -qx 'PathExists=/var/atc/os/reboot-request' "$OS_DIR/atc-os-reboot.path" ||
-  fail "the reboot path unit does not watch /var/atc/os/reboot-request"
-rm_at="$(line_of 'ExecStart=/bin/rm -f /var/atc/os/reboot-request' "$OS_DIR/atc-os-reboot.service")"
+for request in /var/atc/os/reboot-request /var/atc/state/os/reboot-request; do
+  grep -qx "PathExists=$request" "$OS_DIR/atc-os-reboot.path" ||
+    fail "the reboot path unit does not watch $request"
+done
+rm_at="$(line_of 'ExecStart=/bin/rm -f /var/atc/os/reboot-request /var/atc/state/os/reboot-request' "$OS_DIR/atc-os-reboot.service")"
 reboot_at="$(line_of 'ExecStart=/bin/systemctl --no-block reboot' "$OS_DIR/atc-os-reboot.service")"
 if [ -z "$rm_at" ] || [ -z "$reboot_at" ] || [ "$rm_at" -gt "$reboot_at" ]; then
   fail "the reboot service does not remove the request before it reboots, so" \
