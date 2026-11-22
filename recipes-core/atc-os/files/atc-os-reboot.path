@@ -5,8 +5,11 @@ RequiresMountsFor=/var/atc
 
 [Path]
 # atcd runs as user atc and cannot reboot through logind without polkit. Only
-# atcd can write the store, so only atcd can create this file.
+# atcd can write the store, so only atcd can create this file. Store layout 6
+# moves the request under state/. Both paths stay until every device runs a
+# layout 6 atcd.
 PathExists=/var/atc/os/reboot-request
+PathExists=/var/atc/state/os/reboot-request
 
 [Install]
 WantedBy=multi-user.target
