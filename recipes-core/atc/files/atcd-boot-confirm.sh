@@ -55,17 +55,20 @@ fi
 # So a hung atcd held this ExecStartPre until systemd's 90 s start timeout.
 # Restart=always then ran it again, for ever, with no count.
 #
-# The limits add up to less than 90 s. One probe that hangs ends the probes,
-# so the worst run is a probe, the count, the rollback and the reset. The
-# rollback gets the most time: it opens the store, and it can move a layout 6
-# store back. A test sets shorter limits through the environment.
+# The probes, the count and the reset get 10 s each. The rollback gets the
+# time that is left of an 85 s budget, and at least 10 s. It opens the store,
+# and it can move a layout 6 store back. A test sets shorter limits through
+# the environment.
 #
 # The kill is SIGKILL, because a hung atcd can ignore SIGTERM. GNU coreutils
-# and BusyBox `timeout` both take `-s KILL SECS`, and both then exit 137.
-# Without `timeout`, the call runs unbounded, as before.
+# and BusyBox `timeout` both take `-s KILL SECS`, and both then exit 137. GNU
+# kills the process group of the call, and BusyBox kills only its pid. The
+# atc image installs coreutils. Without `timeout`, the call runs unbounded,
+# as before.
+GUARD_START="$(date +%s)"
+BUDGET_SECS=85
 PROBE_SECS="${ATCD_BOOT_CONFIRM_PROBE_SECS:-10}"
 COUNT_SECS="${ATCD_BOOT_CONFIRM_COUNT_SECS:-10}"
-ROLLBACK_SECS="${ATCD_BOOT_CONFIRM_ROLLBACK_SECS:-50}"
 TIMED_OUT=137
 bounded() {
   b_secs="$1"
@@ -150,12 +153,12 @@ count_raw="$(bounded "$COUNT_SECS" "$ATCD" boot-confirm increment --store-root "
 # output before the exit code would report a "bad output" contract violation for
 # what is really a failed command, sending an operator down the wrong recovery.
 if [ "$increment_rc" = "$TIMED_OUT" ]; then
-  # ATC-91: an increment does no more than a small file write. One that hangs
-  # for COUNT_SECS is a broken atcd. So this start counts as a failed boot,
-  # over the limit, and the guard tries the rollback.
+  # ATC-91: under contract 2 the count runs the confirmed atcd. So a count
+  # that hangs is most likely a slow disk, not a bad release, and one stall
+  # must not roll back. This start is not counted, and the guard goes on.
   echo "atcd-boot-confirm: WARNING 'atcd boot-confirm increment' hung for ${COUNT_SECS} s and was killed;" >&2
-  echo "atcd-boot-confirm: this start counts as a failed boot." >&2
-  count=$((LIMIT + 1))
+  echo "atcd-boot-confirm: this start is not counted, and the guard is INERT for it." >&2
+  count=0
 elif [ "$increment_rc" != 0 ]; then
   # atcd did not complete: it could not exec, or it exited nonzero (whatever it
   # managed to print is unreliable). Both are out of this guard's reach --
@@ -220,7 +223,13 @@ if [ "$count" -gt "$LIMIT" ]; then
   # real fault on two chaos-farm nights. Every OTHER outcome still gets atcd's
   # text verbatim, because the operator needs the store error under the verdict.
   # Capture the status now: the `elif` test overwrites `$?`.
-  rollback_output="$(bounded "$ROLLBACK_SECS" "$ATCD" rollback --store-root "$STORE_ROOT" 2>&1)" &&
+  if [ -n "${ATCD_BOOT_CONFIRM_ROLLBACK_SECS:-}" ]; then
+    rollback_secs="$ATCD_BOOT_CONFIRM_ROLLBACK_SECS"
+  else
+    rollback_secs=$((BUDGET_SECS - ($(date +%s) - GUARD_START)))
+    if [ "$rollback_secs" -lt 10 ]; then rollback_secs=10; fi
+  fi
+  rollback_output="$(bounded "$rollback_secs" "$ATCD" rollback --store-root "$STORE_ROOT" 2>&1)" &&
     rollback_rc=0 || rollback_rc=$?
   if [ "$rollback_rc" = 0 ]; then
     if [ -n "$rollback_output" ]; then echo "$rollback_output" >&2; fi
@@ -238,10 +247,14 @@ if [ "$count" -gt "$LIMIT" ]; then
     echo "atcd-boot-confirm: floor (atcd's line above names the cause), so atcd stays." >&2
     echo "atcd-boot-confirm: recover by re-seeding a store-aware atcd (atc bootstrap atcd install)." >&2
   elif [ "$rollback_rc" = "$TIMED_OUT" ]; then
+    # The kill can stop a store move part way. atcd must not start on such a
+    # store, so this start fails. The count stays over the limit, so the next
+    # start runs the rollback again, and the move goes on from where it
+    # stopped.
     if [ -n "$rollback_output" ]; then echo "$rollback_output" >&2; fi
-    echo "atcd-boot-confirm: WARNING 'atcd rollback' hung for ${ROLLBACK_SECS} s and was killed." >&2
-    echo "atcd-boot-confirm: a store move that stopped part way finishes on the next run." >&2
-    echo "atcd-boot-confirm: recover by re-seeding atcd externally (atc bootstrap atcd install)." >&2
+    echo "atcd-boot-confirm: WARNING 'atcd rollback' ran for ${rollback_secs} s and was killed." >&2
+    echo "atcd-boot-confirm: this start fails, and the next start runs the rollback again." >&2
+    exit 1
   else
     if [ -n "$rollback_output" ]; then echo "$rollback_output" >&2; fi
     echo "atcd-boot-confirm: WARNING the revert FAILED with exit $rollback_rc." >&2
