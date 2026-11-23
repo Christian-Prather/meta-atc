@@ -56,9 +56,9 @@ fi
 # Restart=always then ran it again, for ever, with no count.
 #
 # The probes, the count and the reset get 10 s each. The rollback gets the
-# time that is left of an 85 s budget, and at least 10 s. It opens the store,
-# and it can move a layout 6 store back. A test sets shorter limits through
-# the environment.
+# time that is left of an 85 s budget after the reset, and at least 10 s. It
+# opens the store, and it can move a layout 6 store back. A test sets shorter
+# limits through the environment.
 #
 # The kill is SIGKILL, because a hung atcd can ignore SIGTERM. GNU coreutils
 # and BusyBox `timeout` both take `-s KILL SECS`, and both then exit 137. GNU
@@ -226,7 +226,9 @@ if [ "$count" -gt "$LIMIT" ]; then
   if [ -n "${ATCD_BOOT_CONFIRM_ROLLBACK_SECS:-}" ]; then
     rollback_secs="$ATCD_BOOT_CONFIRM_ROLLBACK_SECS"
   else
-    rollback_secs=$((BUDGET_SECS - ($(date +%s) - GUARD_START)))
+    # Keep the reset's limit out of the budget, so a reset after a slow
+    # rollback still ends before systemd's start timeout.
+    rollback_secs=$((BUDGET_SECS - COUNT_SECS - ($(date +%s) - GUARD_START)))
     if [ "$rollback_secs" -lt 10 ]; then rollback_secs=10; fi
   fi
   rollback_output="$(bounded "$rollback_secs" "$ATCD" rollback --store-root "$STORE_ROOT" 2>&1)" &&
