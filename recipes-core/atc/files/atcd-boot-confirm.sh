@@ -51,16 +51,42 @@ else
   ATCD="$ATCD_RELEASE_ROOT/current/atcd/atcd"
 fi
 
+# ATC-91: every atcd call has a time limit. The unit sets no TimeoutStartSec.
+# So a hung atcd held this ExecStartPre until systemd's 90 s start timeout.
+# Restart=always then ran it again, for ever, with no count.
+#
+# The limits add up to less than 90 s. One probe that hangs ends the probes,
+# so the worst run is a probe, the count, the rollback and the reset. The
+# rollback gets the most time: it opens the store, and it can move a layout 6
+# store back. A test sets shorter limits through the environment.
+#
+# The kill is SIGKILL, because a hung atcd can ignore SIGTERM. GNU coreutils
+# and BusyBox `timeout` both take `-s KILL SECS`, and both then exit 137.
+# Without `timeout`, the call runs unbounded, as before.
+PROBE_SECS="${ATCD_BOOT_CONFIRM_PROBE_SECS:-10}"
+COUNT_SECS="${ATCD_BOOT_CONFIRM_COUNT_SECS:-10}"
+ROLLBACK_SECS="${ATCD_BOOT_CONFIRM_ROLLBACK_SECS:-50}"
+TIMED_OUT=137
+bounded() {
+  b_secs="$1"
+  shift
+  if command -v timeout > /dev/null 2>&1; then
+    timeout -s KILL "$b_secs" "$@"
+  else
+    "$@"
+  fi
+}
+
 # Store layout v6 (design section 7): on a store at layout 6, an atcd that
 # reads only layout 5 must not count or roll back. Both write v5 paths into
 # the v6 store. Such an atcd prints 5 for `layout-version`, or clap refuses
 # the verb with exit 2. Any other answer counts as before: the checks below
 # report a broken atcd.
 reads_only_v5() {
-  rov_out="$("$1" layout-version 2> /dev/null)" && rov_rc=0 || rov_rc=$?
+  rov_out="$(bounded "$PROBE_SECS" "$1" layout-version 2> /dev/null)" && rov_rc=0 || rov_rc=$?
   if [ "$rov_rc" = 0 ] && [ "$rov_out" = 5 ]; then return 0; fi
   if [ "$rov_rc" = 2 ]; then
-    rov_err="$("$1" layout-version 2>&1 > /dev/null)" || :
+    rov_err="$(bounded "$PROBE_SECS" "$1" layout-version 2>&1 > /dev/null)" || :
     case "$rov_err" in *'unrecognized subcommand'*) return 0 ;; esac
   fi
   return 1
@@ -73,13 +99,29 @@ reads_only_v5() {
 # 6 or more. When `current` cannot run, no atcd on the device may write here: the
 # guard writes nothing and names the repair. ExecStart then fails on the
 # layout, which writes nothing either. An ATCD_BIN override is never replaced.
-layout="$(cat "$STORE_ROOT/LAYOUT_VERSION" 2> /dev/null || true)"
+#
+# ATC-243: the sentinel is read only when it is a regular file that is not a
+# link, as the bootstrap reader does. A `cat` of a FIFO blocks this start for
+# ever. atcd refuses any other LAYOUT_VERSION with ATC-E0184, and the layout of
+# such a store is unknown, so this guard does not count or roll back there.
+# ponytail: test, then `cat`. A swap to a FIFO between the two still blocks;
+# a reader with O_NONBLOCK needs a helper binary on the device.
+SENTINEL="$STORE_ROOT/LAYOUT_VERSION"
+if [ -e "$SENTINEL" ] || [ -L "$SENTINEL" ]; then
+  if [ ! -f "$SENTINEL" ] || [ -L "$SENTINEL" ]; then
+    echo "atcd-boot-confirm: $SENTINEL is not a regular file (ATC-E0184)." >&2
+    echo "atcd-boot-confirm: skipped the count and the rollback, and wrote nothing." >&2
+    echo "atcd-boot-confirm: replace it with a regular file that holds 6, then restart atcd." >&2
+    exit 0
+  fi
+fi
+layout="$(cat "$SENTINEL" 2> /dev/null || true)"
 if [ "$layout" = 6 ] && reads_only_v5 "$ATCD"; then
   ATCD_CURRENT="$ATCD_RELEASE_ROOT/current/atcd/atcd"
   cur_lv=
   if [ -z "${ATCD_BIN:-}" ] && [ "$ATCD" != "$ATCD_CURRENT" ] &&
     [ -f "$ATCD_CURRENT" ] && [ -x "$ATCD_CURRENT" ]; then
-    cur_lv="$("$ATCD_CURRENT" layout-version 2> /dev/null)" || cur_lv=
+    cur_lv="$(bounded "$PROBE_SECS" "$ATCD_CURRENT" layout-version 2> /dev/null)" || cur_lv=
   fi
   # A later atcd reads layout 6 too, so any integer of 6 or more qualifies.
   case "$cur_lv" in '' | *[!0-9]*) cur_lv=0 ;; esac
@@ -95,8 +137,8 @@ if [ "$layout" = 6 ] && reads_only_v5 "$ATCD"; then
   fi
 fi
 
-count_raw="$("$ATCD" boot-confirm increment --store-root "$STORE_ROOT" 2> /dev/null)" &&
-  increment_ran=1 || increment_ran=0
+count_raw="$(bounded "$COUNT_SECS" "$ATCD" boot-confirm increment --store-root "$STORE_ROOT" 2> /dev/null)" &&
+  increment_rc=0 || increment_rc=$?
 # #1099: the numeric test below must never die with "[: Illegal number", so an
 # unparseable count still becomes 0. But 0 NEVER triggers a rollback, so a
 # silent coercion is a silently DISABLED safety net. Say so, loudly, on stderr:
@@ -107,7 +149,14 @@ count_raw="$("$ATCD" boot-confirm increment --store-root "$STORE_ROOT" 2> /dev/n
 # line, so a non-empty count_raw does not mean atcd succeeded. Classifying on the
 # output before the exit code would report a "bad output" contract violation for
 # what is really a failed command, sending an operator down the wrong recovery.
-if [ "$increment_ran" = 0 ]; then
+if [ "$increment_rc" = "$TIMED_OUT" ]; then
+  # ATC-91: an increment does no more than a small file write. One that hangs
+  # for COUNT_SECS is a broken atcd. So this start counts as a failed boot,
+  # over the limit, and the guard tries the rollback.
+  echo "atcd-boot-confirm: WARNING 'atcd boot-confirm increment' hung for ${COUNT_SECS} s and was killed;" >&2
+  echo "atcd-boot-confirm: this start counts as a failed boot." >&2
+  count=$((LIMIT + 1))
+elif [ "$increment_rc" != 0 ]; then
   # atcd did not complete: it could not exec, or it exited nonzero (whatever it
   # managed to print is unreliable). Both are out of this guard's reach --
   # increment and rollback are atcd subcommands, so a broken binary leaves the
@@ -171,11 +220,11 @@ if [ "$count" -gt "$LIMIT" ]; then
   # real fault on two chaos-farm nights. Every OTHER outcome still gets atcd's
   # text verbatim, because the operator needs the store error under the verdict.
   # Capture the status now: the `elif` test overwrites `$?`.
-  rollback_output="$("$ATCD" rollback --store-root "$STORE_ROOT" 2>&1)" &&
+  rollback_output="$(bounded "$ROLLBACK_SECS" "$ATCD" rollback --store-root "$STORE_ROOT" 2>&1)" &&
     rollback_rc=0 || rollback_rc=$?
   if [ "$rollback_rc" = 0 ]; then
     if [ -n "$rollback_output" ]; then echo "$rollback_output" >&2; fi
-    "$ATCD" boot-confirm reset --store-root "$STORE_ROOT" || true
+    bounded "$COUNT_SECS" "$ATCD" boot-confirm reset --store-root "$STORE_ROOT" || true
     echo "atcd-boot-confirm: reverted to prior atcd" >&2
   elif [ "$rollback_rc" = "$NO_PRIOR_RELEASE_EXIT" ]; then
     # INFO, not an error. atcd's ATC-E0129 line is dropped here on purpose: it
@@ -188,6 +237,11 @@ if [ "$count" -gt "$LIMIT" ]; then
     echo "atcd-boot-confirm: WARNING a prior version exists below the settings rollback" >&2
     echo "atcd-boot-confirm: floor (atcd's line above names the cause), so atcd stays." >&2
     echo "atcd-boot-confirm: recover by re-seeding a store-aware atcd (atc bootstrap atcd install)." >&2
+  elif [ "$rollback_rc" = "$TIMED_OUT" ]; then
+    if [ -n "$rollback_output" ]; then echo "$rollback_output" >&2; fi
+    echo "atcd-boot-confirm: WARNING 'atcd rollback' hung for ${ROLLBACK_SECS} s and was killed." >&2
+    echo "atcd-boot-confirm: a store move that stopped part way finishes on the next run." >&2
+    echo "atcd-boot-confirm: recover by re-seeding atcd externally (atc bootstrap atcd install)." >&2
   else
     if [ -n "$rollback_output" ]; then echo "$rollback_output" >&2; fi
     echo "atcd-boot-confirm: WARNING the revert FAILED with exit $rollback_rc." >&2
