@@ -91,6 +91,8 @@ LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda
 LICENSE_FLAGS = "commercial_atcd"
 FILES:${PN}-boot-confirm = "${ATCD_GUARD_PATH}"
 FILES:${PN} = "${ATCD_REMOTE_PATH}"
+FILES:${PN}-service = "${ATCD_LINK_PATH} \
+    ${sysconfdir}/sudoers.d/atc-shell ${localstatedir}/lib/systemd/linger"
 ATCD_LIBEXEC = "/usr/local/libexec"
 ATCD_REMOTE_PATH = "${bindir}/atcd"
 ATCD_EXPECTED_ELF_MACHINE:qemux86-64 = "Advanced Micro Devices X86-64"
@@ -409,6 +411,10 @@ expect fail "a layer with no digest helper is caught" "$dhelper"
     's/^FILES:${PN}-boot-confirm = .*/FILES:${PN}-boot-confirm = "${ATCD_GUARD_PATH} ${ATCD_REMOTE_PATH}"/'
   atcd_recipe_case binary-not-in-pn "an atcd package without the binary is caught" \
     's/^FILES:${PN} = .*/FILES:${PN} = "${ATCD_GUARD_PATH}"/'
+  atcd_recipe_case owns-sudoers-dir "a package that owns the sudoers.d directory is caught" \
+    's#${sysconfdir}/sudoers.d/atc-shell#${sysconfdir}/sudoers.d#'
+  atcd_recipe_case owns-sudoers-dir-eol "the sudoers.d directory at a line end is caught" \
+    's#${sysconfdir}/sudoers.d/atc-shell ${localstatedir}/lib/systemd/linger"#${localstatedir}/lib/systemd/linger \\\n    ${sysconfdir}/sudoers.d"#'
 }
 
 for conf in layer.conf distro/include/atc.inc; do

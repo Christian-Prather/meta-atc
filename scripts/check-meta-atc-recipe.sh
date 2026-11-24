@@ -316,6 +316,15 @@ set -e
 [ -z "$accepts" ] || fail "the layer configuration sets LICENSE_FLAGS_ACCEPTED, so every \
 product accepts the atcd license without a choice: $accepts"
 
+# 3k. No package of the atcd recipe owns ${sysconfdir}/sudoers.d. sudo owns it
+#     with mode 0750, and a product layer can own it too. With package_rpm, two
+#     owners with different modes stop the rootfs transaction ("file
+#     /etc/sudoers.d conflicts between attempted installs"). List the rule file.
+if search '^[^#]*[" ]\$\{sysconfdir\}/sudoers\.d(["[:space:]\\]|$)' "$RECIPE" > /dev/null; then
+  fail "a FILES list of the atcd recipe names \${sysconfdir}/sudoers.d, so the package \
+owns the directory and an RPM image fails on the owner mode. List the rule file"
+fi
+
 # 3f. No `sudo` group in EXTRA_USERS_PARAMS. That group is a Debian convention;
 #     Yocto's sudo package does not create it, so `useradd -G atc,sudo` fails on
 #     an unknown group and the deploy account never exists, and every
