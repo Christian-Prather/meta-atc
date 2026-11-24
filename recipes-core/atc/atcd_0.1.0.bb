@@ -394,8 +394,9 @@ readelf reports '${actual_machine}', expected '${ATCD_EXPECTED_ELF_MACHINE}'."
         ${D}${systemd_system_unitdir}/user@${ATC_HOOKS_UID}.service.d/zz-atc-hook-user-stop-timeout.conf
 
     # Members of group atc may run a shell as atc-hooks, for `atc` hook
-    # commands over ssh.
-    install -d ${D}${sysconfdir}/sudoers.d
+    # commands over ssh. The directory belongs to sudo, mode 0750. The
+    # package holds the rule file only (see FILES below).
+    install -d -m 0750 ${D}${sysconfdir}/sudoers.d
     install -m 0440 ${WORKDIR}/atc-shell.sudoers ${D}${sysconfdir}/sudoers.d/atc-shell
 
     # Linger for atc-hooks: hooks run `systemctl --user` services, and the
@@ -425,9 +426,13 @@ pkg_postinst:${PN}-service() {
 # partition. systemd-tmpfiles sets its owner and mode at boot (atcd.conf), and
 # atcd-store-seed fills it.
 FILES:${PN} = "${ATCD_REMOTE_PATH}"
+# The sudoers rule is listed as a file, not as its directory. A package that
+# lists ${sysconfdir}/sudoers.d owns that directory. sudo and other packages
+# own it too, with mode 0750, and an RPM image refuses two owners with
+# different modes ("file /etc/sudoers.d conflicts between attempted installs").
 FILES:${PN}-service = "${ATCD_LINK_PATH} \
     ${systemd_system_unitdir} ${libexecdir}/atcd ${nonarch_libdir}/tmpfiles.d \
-    ${sysconfdir}/sudoers.d ${localstatedir}/lib/systemd/linger"
+    ${sysconfdir}/sudoers.d/atc-shell ${localstatedir}/lib/systemd/linger"
 
 RDEPENDS:${PN} += "${PN}-boot-confirm ${PN}-service"
 # The sudoers rule needs sudo.
