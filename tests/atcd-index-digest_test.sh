@@ -80,6 +80,30 @@ expect_refused "a guard digest that is not a string is refused" \
 expect_refused "an artifacts array is refused" "{\"artifacts\":[$(guard "$pinned" | sed 's/^"[^"]*"://')]}"
 expect_refused "bytes that are not JSON are refused" "not json"
 
+# Bytes that atcd (serde_json) refuses and Python's json module takes. The
+# helper must refuse them too, or the build accepts an index atcd cannot read.
+good="{\"artifacts\":{$(guard "$pinned")}"
+expect_refused "NaN is refused" "$good,\"n\":NaN}"
+expect_refused "Infinity is refused" "$good,\"n\":-Infinity}"
+expect_refused "a number too large for a float is refused" "$good,\"n\":1e400}"
+expect_refused "a lone surrogate is refused" "$good,\"n\":\"\\ud800\"}"
+deep="$(printf '[%.0s' {1..200})$(printf ']%.0s' {1..200})"
+expect_refused "nesting deeper than 128 is refused" "$good,\"n\":$deep}"
+printf '\xef\xbb\xbf%s}' "$good" > "$tmp/bom.json"
+if python3 "$HELPER" "$tmp/bom.json" agency/atcd-boot-confirm any > /dev/null 2>&1; then
+  echo "FAIL: an index with a BOM: the helper read it, want a refusal" >&2
+  failures=$((failures + 1))
+else
+  echo "ok: an index with a BOM is refused"
+fi
+printf '%s}' "$good" | iconv -f UTF-8 -t UTF-16LE > "$tmp/utf16.json"
+if python3 "$HELPER" "$tmp/utf16.json" agency/atcd-boot-confirm any > /dev/null 2>&1; then
+  echo "FAIL: a UTF-16 index: the helper read it, want a refusal" >&2
+  failures=$((failures + 1))
+else
+  echo "ok: a UTF-16 index is refused"
+fi
+
 [ "$failures" -eq 0 ] || {
   echo "$failures case(s) failed" >&2
   exit 1

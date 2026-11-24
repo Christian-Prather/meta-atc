@@ -349,6 +349,14 @@ atcd_recipe_case() { # <name> <description> <sed expression>
     '/\[ "$index_guard" = /,/bbfatal "the index does not name the guard"/d'
   atcd_recipe_case guard-compare-other "a guard digest compared with another value is caught" \
     's/"sha256:${ATCD_GUARD_SHA256}" \]/"sha256:${ATCD_SHA256}" ]/'
+  atcd_recipe_case guard-read-not-fatal "a guard read that does not stop the build is caught" \
+    's/        bbfatal "cannot read the guard digest"/        true/'
+  atcd_recipe_case guard-compare-not-fatal "a guard compare that does not stop the build is caught" \
+    's/        bbfatal "the index does not name the guard"/        true/'
+  atcd_recipe_case guard-overwritten "a second index_guard assignment before the compare is caught" \
+    '/\[ "$index_guard" = /i\    index_guard="sha256:${ATCD_GUARD_SHA256}"'
+  atcd_recipe_case guard-check-outside-compile "a guard check outside do_compile is caught" \
+    's/^do_compile() {/do_unused() {/'
   atcd_recipe_case helper-not-fetched "a digest helper missing from SRC_URI is caught" \
     '/file:\/\/atcd-index-digest.py/d'
   atcd_recipe_case guard-other-file "a do_install of another guard file is caught" \
