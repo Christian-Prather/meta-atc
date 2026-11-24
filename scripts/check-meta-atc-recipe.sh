@@ -206,12 +206,27 @@ for var in ATCD_GUARD_SHA256 ATCD_INSTALLER_SHA256; do
   search "^[^#]*https://[^;\"]*/\\\$\\{${var}\\};([^ \"]*;)?sha256sum=\\\$\\{${var}\\}" "$RECIPE" > /dev/null ||
     fail "the atcd recipe does not fetch \${${var}} in SRC_URI by its address with sha256sum=\${${var}}"
 done
+# The guard digest is read at its JSON path, as atcd reads it, by the helper
+# that do_compile runs too. A text search could match a nested object that
+# atcd never reads.
+DIGEST_HELPER="$LAYER/recipes-core/atc/files/atcd-index-digest.py"
+[ -f "$DIGEST_HELPER" ] || fail "missing $DIGEST_HELPER, which reads a digest from the index"
+search '^[^#]*file://atcd-index-digest\.py([ "\\]|$)' "$RECIPE" > /dev/null ||
+  fail "the atcd recipe does not put atcd-index-digest.py in SRC_URI"
 guard_sha="$(search_optional '^ATCD_GUARD_SHA256 = "[0-9a-f]{64}"$' "$RECIPE" | sed -n 's/.*"\(.*\)".*/\1/p')"
-[ -z "$guard_sha" ] ||
-  search "\"agency/atcd-boot-confirm\":\\{\"any\":\\{\"digest\":\"sha256:${guard_sha}\"" "$index" > /dev/null ||
-  fail "ATCD_GUARD_SHA256 is not the digest of agency/atcd-boot-confirm any in the index in atcd-release/"
-search "^[^#]*grep -qF '\"agency/atcd-boot-confirm\":\\{\"any\":\\{\"digest\":\"sha256:\\\$\\{ATCD_GUARD_SHA256\\}\"'" "$RECIPE" > /dev/null ||
+if [ -n "$guard_sha" ] && [ -f "$DIGEST_HELPER" ]; then
+  index_guard="$(python3 "$DIGEST_HELPER" "$index" agency/atcd-boot-confirm any)" || index_guard=""
+  [ "$index_guard" = "sha256:$guard_sha" ] ||
+    fail "ATCD_GUARD_SHA256 is not the digest of agency/atcd-boot-confirm any in the index in atcd-release/"
+fi
+# do_compile runs the helper on the verified index and compares its answer.
+# The command spans continuation lines, so join them first (see 3d).
+recipe_joined="$(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba' -e '}' "$RECIPE")"
+if ! rg -q '^[^#]*index_guard=\$\(python3 \$\{WORKDIR\}/atcd-index-digest\.py \$local_dir/index\.json +agency/atcd-boot-confirm any\) *\|\|' \
+  <<< "$recipe_joined" ||
+  ! rg -q '^[^#]*\[ "\$index_guard" = "sha256:\$\{ATCD_GUARD_SHA256\}" \] *\|\|' <<< "$recipe_joined"; then
   fail "do_compile does not check ATCD_GUARD_SHA256 against the guard entry of the verified index"
+fi
 search '^[^#]*install -m 0755 \$\{WORKDIR\}/\$\{ATCD_GUARD_FILE\} ' "$RECIPE" > /dev/null ||
   fail "do_install does not install the guard that do_fetch got by ATCD_GUARD_SHA256"
 if search "^[^#]*setVar\\('ATCD_INSTALLER" "$RECIPE" > /dev/null; then

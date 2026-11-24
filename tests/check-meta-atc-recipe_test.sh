@@ -16,6 +16,12 @@ set -euo pipefail
 
 GATE="${1:?usage: check-meta-atc-recipe_test.sh <path-to-check-meta-atc-recipe.sh>}"
 GATE="$(cd "$(dirname "$GATE")" && pwd)/$(basename "$GATE")"
+# The helper that reads a digest from the index, beside the gate's layer.
+HELPER="$(dirname "$GATE")/../recipes-core/atc/files/atcd-index-digest.py"
+[ -f "$HELPER" ] || {
+  echo "FAIL: no digest helper at $HELPER" >&2
+  exit 1
+}
 
 failures=0
 tmp="$(mktemp -d)"
@@ -52,6 +58,7 @@ make_fixture() {
   mkdir -p "$root/meta-atc/scripts"
   cp "$GATE" "$root/meta-atc/scripts/check-meta-atc-recipe.sh"
   chmod +x "$root/meta-atc/scripts/check-meta-atc-recipe.sh"
+  cp "$HELPER" "$root/meta-atc/recipes-core/atc/files/atcd-index-digest.py"
 
   # The signed index of the pinned release: one line of compact JSON, as the
   # origin serves it. The agency/atc entry holds digests that must not satisfy
@@ -100,6 +107,7 @@ ATCD_GUARD_FILE = "atcd-boot-confirm-${ATCD_GUARD_SHA256}.sh"
 ATCD_INSTALLER_FILE = "install-atcd-${ATCD_INSTALLER_SHA256}.sh"
 SRC_URI = "file://atcd-release/index.json \
            file://atcd-release/index.json.sig \
+           file://atcd-index-digest.py \
            https://atc.dev/agency/blobs/sha256/${ATCD_SHA256};downloadfilename=atcd-${ATCD_VERSION}-${ATCD_TARGET};sha256sum=${ATCD_SHA256} \
            https://atc.dev/agency/blobs/sha256/${ATCD_GUARD_SHA256};downloadfilename=${ATCD_GUARD_FILE};sha256sum=${ATCD_GUARD_SHA256} \
            https://atc.dev/agency/blobs/sha256/${ATCD_INSTALLER_SHA256};downloadfilename=${ATCD_INSTALLER_FILE};sha256sum=${ATCD_INSTALLER_SHA256} \
@@ -115,8 +123,11 @@ do_compile() {
     ATC_TRACK="${ATCD_TRACK}" ATC_VERSION="${ATCD_VERSION}" ATC_TARGET="${ATCD_TARGET}" \
         ATC_LOCAL_DIR="$local_dir" ATC_DOWNLOAD_ONLY="${B}/atcd" \
         sh ${WORKDIR}/${ATCD_INSTALLER_FILE}
-    grep -qF '"agency/atcd-boot-confirm":{"any":{"digest":"sha256:${ATCD_GUARD_SHA256}"' \
-        $local_dir/index.json
+    index_guard=$(python3 ${WORKDIR}/atcd-index-digest.py $local_dir/index.json \
+        agency/atcd-boot-confirm any) ||
+        bbfatal "cannot read the guard digest"
+    [ "$index_guard" = "sha256:${ATCD_GUARD_SHA256}" ] ||
+        bbfatal "the index does not name the guard"
 }
 do_install() {
     install -m 0755 ${WORKDIR}/${ATCD_GUARD_FILE} ${D}${ATCD_GUARD_PATH}
@@ -332,8 +343,14 @@ atcd_recipe_case() { # <name> <description> <sed expression>
     '/${ATCD_INSTALLER_SHA256};downloadfilename/d'
   atcd_recipe_case installer-other-file "an install-atcd.sh run of another file is caught" \
     's|sh ${WORKDIR}/${ATCD_INSTALLER_FILE}|sh ${WORKDIR}/install-atcd.sh|'
-  atcd_recipe_case no-guard-check "a do_compile without the guard check is caught" \
-    '/grep -qF .*agency\/atcd-boot-confirm/d'
+  atcd_recipe_case no-guard-read "a do_compile that does not read the guard digest is caught" \
+    '/index_guard=$(python3/,/bbfatal "cannot read the guard digest"/d'
+  atcd_recipe_case no-guard-compare "a do_compile that does not compare the guard digest is caught" \
+    '/\[ "$index_guard" = /,/bbfatal "the index does not name the guard"/d'
+  atcd_recipe_case guard-compare-other "a guard digest compared with another value is caught" \
+    's/"sha256:${ATCD_GUARD_SHA256}" \]/"sha256:${ATCD_SHA256}" ]/'
+  atcd_recipe_case helper-not-fetched "a digest helper missing from SRC_URI is caught" \
+    '/file:\/\/atcd-index-digest.py/d'
   atcd_recipe_case guard-other-file "a do_install of another guard file is caught" \
     's|${WORKDIR}/${ATCD_GUARD_FILE}|${WORKDIR}/atcd-boot-confirm.sh|'
   atcd_recipe_case installer-from-index "a follow mode that sets the installer digest is caught" \
@@ -345,6 +362,24 @@ for copy in atcd-boot-confirm.sh install-atcd.sh; do
   printf '%s\n' '#!/bin/sh' > "$dcopy/meta-atc/recipes-core/atc/files/$copy"
   expect fail "a layer copy of $copy is caught" "$dcopy"
 done
+# The gate reads the guard digest at its JSON path. A nested object that holds
+# the pinned guard text, before a guard entry with another digest, must not
+# pass. A text search finds the nested copy and passes it.
+dnest="$tmp/nested-guard"
+make_fixture "$dnest"
+pinned_guard='"agency/atcd-boot-confirm":{"any":{"digest":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"'
+other_guard='"agency/atcd-boot-confirm":{"any":{"digest":"sha256:1111111111111111111111111111111111111111111111111111111111111111"'
+sed -i "s|$pinned_guard|\"aaa\":{$pinned_guard}}},$other_guard|" \
+  "$dnest/meta-atc/recipes-core/atc/files/atcd-release/index.json"
+grep -qF "\"aaa\":{$pinned_guard" "$dnest/meta-atc/recipes-core/atc/files/atcd-release/index.json" || {
+  echo "FAIL: the nested-guard fixture did not apply" >&2
+  failures=$((failures + 1))
+}
+expect fail "a nested copy of the guard entry does not pass for the real one" "$dnest"
+dhelper="$tmp/no-helper"
+make_fixture "$dhelper"
+rm "$dhelper/meta-atc/recipes-core/atc/files/atcd-index-digest.py"
+expect fail "a layer with no digest helper is caught" "$dhelper"
 
 # 15c. The atcd binary is closed-source, and a product must accept its license.
 #      Each mutation below breaks one part: the license names, the flag, or the

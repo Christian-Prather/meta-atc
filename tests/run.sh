@@ -39,6 +39,8 @@ for s in checkout-layers rauc-test-keys qemu-rauc-proof qemu-rauc-faults tegra-b
   run "$s --self-test" bash "$ROOT/scripts/$s.sh" --self-test
 done
 
+run "atcd index digest helper" bash "$ROOT/tests/atcd-index-digest_test.sh" \
+  "$ROOT/recipes-core/atc/files/atcd-index-digest.py"
 run "bundle hook" bash "$ROOT/tests/atc-bundle-hook_test.sh" \
   "$ROOT/recipes-core/bundles/files/atc-bundle-hook"
 run "Tegra capsule tool" bash "$ROOT/tests/atc-tegra-capsule_test.sh" \
