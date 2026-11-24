@@ -219,14 +219,34 @@ if [ -n "$guard_sha" ] && [ -f "$DIGEST_HELPER" ]; then
   [ "$index_guard" = "sha256:$guard_sha" ] ||
     fail "ATCD_GUARD_SHA256 is not the digest of agency/atcd-boot-confirm any in the index in atcd-release/"
 fi
-# do_compile runs the helper on the verified index and compares its answer.
-# The command spans continuation lines, so join them first (see 3d).
-recipe_joined="$(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba' -e '}' "$RECIPE")"
-if ! rg -q '^[^#]*index_guard=\$\(python3 \$\{WORKDIR\}/atcd-index-digest\.py \$local_dir/index\.json +agency/atcd-boot-confirm any\) *\|\|' \
-  <<< "$recipe_joined" ||
-  ! rg -q '^[^#]*\[ "\$index_guard" = "sha256:\$\{ATCD_GUARD_SHA256\}" \] *\|\|' <<< "$recipe_joined"; then
+# do_compile runs the helper on the verified index and compares its answer,
+# and each step stops the build with bbfatal. Only the do_compile body counts,
+# with its continuation lines joined (see 3d) and its comments dropped. The
+# four lines must follow each other, and nothing else may set index_guard:
+#   index_guard=$(python3 ${WORKDIR}/atcd-index-digest.py ... any) ||
+#   bbfatal ...
+#   [ "$index_guard" = "sha256:${ATCD_GUARD_SHA256}" ] ||
+#   bbfatal ...
+compile_body="$(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba' -e '}' "$RECIPE" |
+  awk '/^do_compile\(\) \{/ { on = 1; next }
+    on && /^\}/ { exit }
+    on && !/^[[:space:]]*(#|$)/ { sub(/^[[:space:]]+/, ""); print }')"
+# shellcheck disable=SC2016 # bitbake text, not shell expansions
+re_read='^index_guard=\$\(python3 \$\{WORKDIR\}/atcd-index-digest\.py \$local_dir/index\.json +agency/atcd-boot-confirm any\) \|\|$'
+# shellcheck disable=SC2016
+re_compare='^\[ "\$index_guard" = "sha256:\$\{ATCD_GUARD_SHA256\}" \] \|\|$'
+guard_checked=no
+guard_assigns=0
+mapfile -t compile_lines <<< "$compile_body"
+for i in "${!compile_lines[@]}"; do
+  case "${compile_lines[i]}" in *index_guard=*) guard_assigns=$((guard_assigns + 1)) ;; esac
+  if [[ ${compile_lines[i]} =~ $re_read ]] && [[ ${compile_lines[i + 1]:-} == "bbfatal "* ]] &&
+    [[ ${compile_lines[i + 2]:-} =~ $re_compare ]] && [[ ${compile_lines[i + 3]:-} == "bbfatal "* ]]; then
+    guard_checked=yes
+  fi
+done
+[ "$guard_checked" = yes ] && [ "$guard_assigns" -eq 1 ] ||
   fail "do_compile does not check ATCD_GUARD_SHA256 against the guard entry of the verified index"
-fi
 search '^[^#]*install -m 0755 \$\{WORKDIR\}/\$\{ATCD_GUARD_FILE\} ' "$RECIPE" > /dev/null ||
   fail "do_install does not install the guard that do_fetch got by ATCD_GUARD_SHA256"
 if search "^[^#]*setVar\\('ATCD_INSTALLER" "$RECIPE" > /dev/null; then
