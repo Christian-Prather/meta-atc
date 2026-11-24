@@ -149,6 +149,7 @@ COMPATIBLE_HOST = "(x86_64|aarch64).*-linux.*"
 # one file in DL_DIR.
 SRC_URI = "file://atcd-release/index.json \
            file://atcd-release/index.json.sig \
+           file://atcd-index-digest.py \
            https://atc.dev/agency/blobs/sha256/${ATCD_SHA256};downloadfilename=atcd-${ATCD_VERSION}-${ATCD_TARGET};sha256sum=${ATCD_SHA256} \
            https://atc.dev/agency/blobs/sha256/${ATCD_GUARD_SHA256};downloadfilename=${ATCD_GUARD_FILE};sha256sum=${ATCD_GUARD_SHA256} \
            https://atc.dev/agency/blobs/sha256/${ATCD_INSTALLER_SHA256};downloadfilename=${ATCD_INSTALLER_FILE};sha256sum=${ATCD_INSTALLER_SHA256} \
@@ -317,11 +318,15 @@ do_compile() {
 The index in atcd-release/ must be the signed index of that release, \
 and ATCD_TRACK, ATCD_VERSION and ATCD_SHA256 must match it."
     rm -f $local_dir/atcd-${ATCD_TARGET}
-    # install-atcd.sh verified the signature of this index. It is compact JSON
-    # with sorted keys, so the guard entry starts with this exact text. do_fetch
-    # checked that the guard file has this sha256.
-    grep -qF '"agency/atcd-boot-confirm":{"any":{"digest":"sha256:${ATCD_GUARD_SHA256}"' \
-        $local_dir/index.json ||
+    # install-atcd.sh verified the signature of this index. Read the guard
+    # digest at its JSON path, as atcd does. A text search could match a
+    # nested object that atcd never reads. python3 is a bitbake host tool
+    # (HOSTTOOLS). do_fetch checked that the guard file has this sha256.
+    index_guard=$(python3 ${WORKDIR}/atcd-index-digest.py $local_dir/index.json \
+        agency/atcd-boot-confirm any) ||
+        bbfatal "cannot read the agency/atcd-boot-confirm digest from the signed \
+index of atcd ${ATCD_VERSION}."
+    [ "$index_guard" = "sha256:${ATCD_GUARD_SHA256}" ] ||
         bbfatal "the signed index of atcd ${ATCD_VERSION} does not name the guard \
 ${ATCD_GUARD_SHA256}. ATCD_GUARD_SHA256 must be the digest of \
 agency/atcd-boot-confirm in atcd-release/index.json."
