@@ -3,6 +3,12 @@
 # atc-bundle with the hang image in its rootfs slot. It is signed and
 # compatible, so RAUC installs it. The trial boot then stops feeding the
 # watchdog.
+#
+# With ATC_RAUC_CHILD_SLOTS = "1" it also writes the kernel and dtb child
+# slots, as atc-bundle.bb does. The fault is in the rootfs only. The child
+# slots get the real kernel and DTB, so RAUC records the install on all three
+# slots, as for a good bundle, and a partition boot of that slot still finds
+# a valid kernel.
 require recipes-test/atc-test-recipe.inc
 require recipes-core/bundles/atc-bundle.bb
 

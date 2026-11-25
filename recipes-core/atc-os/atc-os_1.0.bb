@@ -79,3 +79,17 @@ do_install:append:atc-slot-grub() {
     install -d ${D}${systemd_system_unitdir}/rauc.service.d
     install -m 0644 ${WORKDIR}/10-atc-boot.conf ${D}${systemd_system_unitdir}/rauc.service.d/
 }
+
+# The lab opt-in ATC_RAUC_CHILD_SLOTS (atc-rauc-child-slots.bbclass), on the
+# nvbootctrl backend only. RAUC's data directory is /data/rauc on UDA
+# (system-nvbootctrl-child-slots.conf). tmpfiles makes it, and the drop-in
+# holds rauc.service until /data is mounted.
+SRC_URI:append:atc-rauc-child-slots = " file://10-atc-rauc-data.conf file://atc-rauc-data.conf"
+FILES:${PN}:append:atc-rauc-child-slots = " ${nonarch_libdir}/tmpfiles.d/atc-rauc-data.conf"
+
+do_install:append:atc-rauc-child-slots() {
+    install -d ${D}${systemd_system_unitdir}/rauc.service.d
+    install -m 0644 ${WORKDIR}/10-atc-rauc-data.conf ${D}${systemd_system_unitdir}/rauc.service.d/
+    install -d ${D}${nonarch_libdir}/tmpfiles.d
+    install -m 0644 ${WORKDIR}/atc-rauc-data.conf ${D}${nonarch_libdir}/tmpfiles.d/
+}

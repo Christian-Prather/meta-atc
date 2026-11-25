@@ -124,6 +124,28 @@ PARTLABEL=UDA  /var/atc  ext4  defaults,nofail,x-systemd.device-timeout=30s,x-sy
 EOF
 }
 
+# The lab opt-in ATC_RAUC_CHILD_SLOTS (atc-rauc-child-slots.bbclass), on the
+# nvbootctrl backend only. The override comes after atc-slot-nvbootctrl in
+# OVERRIDES, so this variant replaces the one above.
+#
+# RAUC keeps its central status on UDA, so the status survives a slot switch.
+# It cannot go under /var/atc: atcd owns every name at the store root, and
+# the store seed gives the whole tree to user atc. So UDA mounts on /data, the
+# store is its directory atc/, which binds onto /var/atc, and RAUC's data
+# directory is /data/rauc. atc-tegra-uda makes atc/ in the factory filesystem,
+# because a bind mount needs its source before tmpfiles runs. atc-os makes
+# /data/rauc with tmpfiles, and holds rauc.service until /data is mounted.
+#
+# Both mounts are nofail, for the reason the variant above gives. When UDA
+# cannot mount, the bind fails with it, and atcd and rauc.service wait on
+# their mounts.
+atc_install_fstab_entries:atc-rauc-child-slots() {
+    cat >> ${IMAGE_ROOTFS}${sysconfdir}/fstab << EOF
+PARTLABEL=UDA  /data  ext4  defaults,nofail,x-systemd.device-timeout=30s,x-systemd.growfs  0  2
+/data/atc  /var/atc  none  bind,nofail,x-systemd.requires-mounts-for=/data  0  0
+EOF
+}
+
 ROOTFS_POSTPROCESS_COMMAND += "atc_install_fstab_entries"
 
 # The empty ext4 the factory flash writes to UDA (recipes-bsp/atc-tegra-uda).
