@@ -325,6 +325,36 @@ if search '^[^#]*[" ]\$\{sysconfdir\}/sudoers\.d(["[:space:]\\]|$)' "$RECIPE" > 
 owns the directory and an RPM image fails on the owner mode. List the rule file"
 fi
 
+# 3l. The subordinate ids of atc-hooks survive a read-only-rootfs image. The
+#     image feature removes the shadow package after the postinsts ran, and
+#     shadow owns /etc/subuid and /etc/subgid. So one script writes the ranges:
+#     the postinst runs it at rootfs time, and an enabled unit runs it at each
+#     boot. The unit has no condition, so a read-only /etc fails the unit and
+#     does not skip it. The recipe names neither file outside a comment: a
+#     FILES entry conflicts with shadow at rootfs time, and a write of its own
+#     is a second writer that the boot unit does not repeat.
+SUBIDS_UNIT="$LAYER/recipes-core/atc/files/atcd-hook-subids.service"
+[ -f "$SUBIDS_UNIT" ] || fail "missing $SUBIDS_UNIT; a read-only-rootfs image \
+loses the subordinate ids of atc-hooks"
+search '^SYSTEMD_SERVICE:\$\{PN\}-service = "([^"]* )?atcd-hook-subids\.service[" ]' "$RECIPE" > /dev/null ||
+  fail "atcd-hook-subids.service is not in SYSTEMD_SERVICE:\${PN}-service, so no boot \
+writes the subordinate ids that a read-only-rootfs image lost"
+search '^WantedBy=multi-user\.target$' "$SUBIDS_UNIT" > /dev/null ||
+  fail "atcd-hook-subids.service has no WantedBy=multi-user.target, so enabling it starts nothing"
+search '^ExecStart=@LIBEXECDIR@/atcd/atcd-hook-subids$' "$SUBIDS_UNIT" > /dev/null ||
+  fail "atcd-hook-subids.service does not run @LIBEXECDIR@/atcd/atcd-hook-subids"
+if search '^Condition' "$SUBIDS_UNIT" > /dev/null; then
+  fail "atcd-hook-subids.service has a condition, so it can skip with no error \
+and leave atc-hooks with no subordinate ids"
+fi
+# shellcheck disable=SC2016 # bitbake text, not shell expansions
+search '^[[:space:]]+sh \$D\$\{libexecdir\}/atcd/atcd-hook-subids "\$D"$' "$RECIPE" > /dev/null ||
+  fail "the atcd-service postinst does not run atcd-hook-subids, the script that the boot unit runs"
+if search '^[^#]*(\$\{sysconfdir\}|/etc)/sub[ug]id' "$RECIPE" > /dev/null; then
+  fail "the atcd recipe names /etc/subuid or /etc/subgid outside a comment. A FILES \
+entry conflicts with shadow, and a write of its own is not repeated at boot. Use atcd-hook-subids"
+fi
+
 # 3f. No `sudo` group in EXTRA_USERS_PARAMS. That group is a Debian convention;
 #     Yocto's sudo package does not create it, so `useradd -G atc,sudo` fails on
 #     an unknown group and the deploy account never exists, and every

@@ -41,6 +41,8 @@ done
 
 run "atcd index digest helper" bash "$ROOT/tests/atcd-index-digest_test.sh" \
   "$ROOT/recipes-core/atc/files/atcd-index-digest.py"
+run "atcd hook subordinate ids" bash "$ROOT/tests/atcd-hook-subids_test.sh" \
+  "$ROOT/recipes-core/atc/files/atcd-hook-subids"
 run "bundle hook" bash "$ROOT/tests/atc-bundle-hook_test.sh" \
   "$ROOT/recipes-core/bundles/files/atc-bundle-hook"
 run "Tegra capsule tool" bash "$ROOT/tests/atc-tegra-capsule_test.sh" \

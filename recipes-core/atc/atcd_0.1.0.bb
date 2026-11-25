@@ -3,9 +3,10 @@ DESCRIPTION = "Installs atcd, the release that ATCD_VERSION pins, verified by \
 install-atcd.sh. Also the end state of a device-side `atcd install`: the atc \
 and atc-hooks users with fixed ids, atcd.service, the store root's owner and \
 mode, the hook user's sudoers rule, subordinate ids, linger and stop timeout, \
-and the boot-confirm guard. No step at run time edits an account. The first \
-boot on an empty store copies this atcd into the store, and atcd updates \
-itself there."
+and the boot-confirm guard. No step at run time edits an account, except one: \
+each boot writes the hook user's subordinate ids again when /etc has lost \
+them. The first boot on an empty store copies this atcd into the store, and \
+atcd updates itself there."
 HOMEPAGE = "https://github.com/Christian-Prather/meta-atc"
 # One license for each package. The atcd binary in ${PN} is closed-source:
 # CLOSED, Yocto's name for a license with no text to ship. The guard in
@@ -60,6 +61,7 @@ ATCD_VERSION = "0.2.6-rc.202611202013.g2c7d0dfbc381"
 # seed, the tmpfiles entry, the hook user's stop timeout and sudoers rule.
 ATCD_LAYER_FILES = "file://atcd.service file://atcd-store-seed.service \
     file://atcd-store-seed file://atcd.conf \
+    file://atcd-hook-subids file://atcd-hook-subids.service \
     file://atcd-hook-user-stop-timeout.conf file://atc-shell.sudoers"
 
 inherit useradd systemd
@@ -74,8 +76,9 @@ ATC_GID ?= "2000"
 ATC_UID ?= "2000"
 ATC_HOOKS_UID ?= "2001"
 # The first subordinate id of atc-hooks: the first block `atc bootstrap`
-# tries.
+# tries. The range has ATC_HOOKS_SUBID_COUNT ids.
 ATC_HOOKS_SUBID_BASE ?= "1879048192"
+ATC_HOOKS_SUBID_COUNT = "65536"
 
 USERADD_PACKAGES = "${PN}-service"
 GROUPADD_PARAM:${PN}-service = "--system -g ${ATC_GID} atc"
@@ -85,9 +88,10 @@ USERADD_PARAM:${PN}-service = "\
     --system -u ${ATC_HOOKS_UID} -g atc -G atc --home-dir /var/lib/atc-hooks --no-create-home --shell /usr/sbin/nologin atc-hooks \
     "
 
-# Only atcd.service is enabled. It requires atcd-store-seed.service.
+# atcd.service and atcd-hook-subids.service are enabled. atcd.service
+# requires atcd-store-seed.service.
 SYSTEMD_PACKAGES = "${PN}-service"
-SYSTEMD_SERVICE:${PN}-service = "atcd.service"
+SYSTEMD_SERVICE:${PN}-service = "atcd.service atcd-hook-subids.service"
 
 # Follow a track instead of the pin. FOR DEVELOPMENT ONLY. See "Follow a track"
 # in README.md.
@@ -385,6 +389,16 @@ readelf reports '${actual_machine}', expected '${ATCD_EXPECTED_ELF_MACHINE}'."
     sed -i 's#@LIBEXECDIR@#${libexecdir}#' ${D}${systemd_system_unitdir}/atcd-store-seed.service
     install -d ${D}${libexecdir}/atcd
     install -m 0755 ${WORKDIR}/atcd-store-seed ${D}${libexecdir}/atcd/
+
+    # The hook user's subordinate ids: the postinst and the boot unit run the
+    # same script, so both write the same range.
+    install -m 0755 ${WORKDIR}/atcd-hook-subids ${D}${libexecdir}/atcd/
+    sed -i -e 's#@ATC_HOOKS_SUBID_BASE@#${ATC_HOOKS_SUBID_BASE}#' \
+        -e 's#@ATC_HOOKS_SUBID_COUNT@#${ATC_HOOKS_SUBID_COUNT}#' \
+        ${D}${libexecdir}/atcd/atcd-hook-subids
+    install -m 0644 ${WORKDIR}/atcd-hook-subids.service ${D}${systemd_system_unitdir}/
+    sed -i -e 's#@LIBEXECDIR@#${libexecdir}#' -e 's#@ATC_HOOKS_UID@#${ATC_HOOKS_UID}#' \
+        ${D}${systemd_system_unitdir}/atcd-hook-subids.service
     install -d ${D}${nonarch_libdir}/tmpfiles.d
     install -m 0644 ${WORKDIR}/atcd.conf ${D}${nonarch_libdir}/tmpfiles.d/
 
@@ -412,14 +426,16 @@ PACKAGES =+ "${PN}-boot-confirm ${PN}-service"
 FILES:${PN}-boot-confirm = "${ATCD_GUARD_PATH}"
 
 # Subordinate ids for atc-hooks, for rootless podman in hooks. A --system
-# user gets none from useradd. Written into the image at rootfs time only. On
-# a device that already has an entry, nothing changes.
+# user gets none from useradd. The postinst writes them into the image.
+#
+# That is not enough on a read-only-rootfs image. The image feature removes
+# the shadow package (ROOTFS_RO_UNNEEDED) after the postinsts ran. shadow owns
+# /etc/subuid and /etc/subgid, so both files leave the image with it. So
+# atcd-hook-subids.service runs the same script at each boot, on the writable
+# /etc. No package of this recipe may own the two files: shadow owns them in
+# a normal image, and two owners conflict at rootfs time.
 pkg_postinst:${PN}-service() {
-    for f in $D${sysconfdir}/subuid $D${sysconfdir}/subgid; do
-        touch "$f"
-        grep -q '^atc-hooks:' "$f" ||
-            echo "atc-hooks:${ATC_HOOKS_SUBID_BASE}:65536" >> "$f"
-    done
+    sh $D${libexecdir}/atcd/atcd-hook-subids "$D"
 }
 
 # /var/atc is NOT in the package. It is the mount point of the data

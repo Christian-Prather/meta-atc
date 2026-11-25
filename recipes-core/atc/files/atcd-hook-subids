@@ -1,0 +1,54 @@
+#!/bin/sh
+# Give the user atc-hooks its subordinate uid and gid ranges.
+#
+# Usage: atcd-hook-subids [root]
+#   root  the root of the system to change. Empty means /.
+#
+# Rootless podman in hooks maps the ids of a container onto these ranges. A
+# --system user gets no ranges from useradd.
+#
+# Two callers run this script:
+#   1. The atcd-service postinst, at rootfs time, with the image root.
+#   2. atcd-hook-subids.service, at each boot.
+# The second caller is necessary on a read-only-rootfs image. That image
+# feature removes the shadow package after the postinsts ran. shadow owns
+# /etc/subuid and /etc/subgid, so both files leave the image. At boot, /etc is
+# writable (an overlay), and the script writes the ranges again.
+#
+# The script changes a file only when it has no atc-hooks line. It keeps a
+# line that is there, also with other values, and every other line.
+#
+# Exit status: 0 when both files have an atc-hooks line, 1 when a file cannot
+# be written. On a read-only /etc, the unit fails and names the file.
+set -eu
+
+root="${1:-}"
+# do_install replaces the two values with ATC_HOOKS_SUBID_BASE and the count.
+line="atc-hooks:@ATC_HOOKS_SUBID_BASE@:@ATC_HOOKS_SUBID_COUNT@"
+case "$line" in
+  *@*)
+    echo "atcd-hook-subids: the range '$line' has a placeholder; do_install did not set it" >&2
+    exit 1
+    ;;
+esac
+
+umask 022
+status=0
+for f in "$root/etc/subuid" "$root/etc/subgid"; do
+  if [ -f "$f" ] && grep -q '^atc-hooks:' "$f"; then
+    continue
+  fi
+  # A last line with no newline would join the new line.
+  sep=""
+  if [ -s "$f" ] && [ -n "$(tail -c 1 "$f")" ]; then
+    sep="
+"
+  fi
+  if ! printf '%s%s\n' "$sep" "$line" 2> /dev/null >> "$f"; then
+    echo "atcd-hook-subids: cannot write $f. Rootless podman in hooks needs the range $line" >&2
+    status=1
+    continue
+  fi
+  echo "atcd-hook-subids: added $line to $f"
+done
+exit "$status"
