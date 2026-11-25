@@ -17,13 +17,16 @@ HOMEPAGE = "https://github.com/Christian-Prather/meta-atc"
 # build time and is in no package.
 #
 # license.bbclass and license_image.bbclass expect no text for CLOSED, so
-# LIC_FILES_CHKSUM names MIT only.
+# LIC_FILES_CHKSUM names MIT and BSD-3-Clause only. The podman bundle ships no
+# license files, so both texts are the common ones from oe-core. The image
+# license manifest then carries the BSD-3-Clause text for the two helpers.
 LICENSE = "CLOSED & (MIT | Apache-2.0) & BSD-3-Clause"
 LICENSE:${PN} = "CLOSED"
 LICENSE:${PN}-boot-confirm = "MIT | Apache-2.0"
 LICENSE:${PN}-service = "MIT"
 LICENSE:${PN}-podman-helpers = "BSD-3-Clause & MIT"
-LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
+LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302 \
+                    file://${COMMON_LICENSE_DIR}/BSD-3-Clause;md5=550794465ba0ec5312d6919e203a55f9"
 
 # A product must accept the atcd license before bitbake builds atcd. Without
 # LICENSE_FLAGS_ACCEPTED += "commercial_atcd" bitbake skips the recipe at parse
