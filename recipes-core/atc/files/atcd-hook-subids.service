@@ -1,0 +1,24 @@
+# Give atc-hooks its subordinate uid and gid ranges, at each boot.
+#
+# The atcd-service postinst writes the ranges into the image. A
+# read-only-rootfs image then removes the shadow package, which owns
+# /etc/subuid and /etc/subgid, so the files are not in the image. This unit
+# writes the ranges again on the writable /etc. When the files have them, it
+# changes nothing. See atcd-hook-subids.
+#
+# No condition skips the unit. On a read-only /etc it fails, and its log names
+# the file, because rootless podman in hooks cannot run without the ranges.
+[Unit]
+Description=Give atc-hooks its subordinate uid and gid ranges
+# Before the manager of atc-hooks (do_install puts its uid in the name). It
+# runs from boot (linger), and podman reads the ranges.
+Before=atcd.service user@@ATC_HOOKS_UID@.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# do_install puts the libexecdir that it installs the script to in the path.
+ExecStart=@LIBEXECDIR@/atcd/atcd-hook-subids
+
+[Install]
+WantedBy=multi-user.target

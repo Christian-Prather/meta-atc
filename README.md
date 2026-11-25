@@ -288,6 +288,15 @@ The store is on the data partition. At the first boot on an empty store,
 `atcd-store-seed.service` copies the image's atcd into it. atcd then updates
 itself inside the store. A later image does not replace the store's atcd.
 
+The subordinate ids of `atc-hooks` (`atc-hooks:1879048192:65536` in
+`/etc/subuid` and `/etc/subgid`) are for rootless podman in hooks. The package
+postinst writes them into the image, and `atcd-hook-subids.service` writes them
+again at each boot when a file has no `atc-hooks` line. The boot unit is
+necessary on a `read-only-rootfs` image: that image feature removes the
+`shadow` package, which owns both files, so they are not in the image. The unit
+writes them on the writable `/etc` (for example an `overlayfs-etc` overlay). On
+a read-only `/etc` the unit fails, and its log names the file.
+
 ## Build
 
 | Target | Output |

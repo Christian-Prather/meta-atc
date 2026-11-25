@@ -22,6 +22,13 @@ HELPER="$(dirname "$GATE")/../recipes-core/atc/files/atcd-index-digest.py"
   echo "FAIL: no digest helper at $HELPER" >&2
   exit 1
 }
+# The boot unit that writes the subordinate ids of atc-hooks, beside the gate's
+# layer. The fixture uses the real unit, so gate 3l reads what ships.
+SUBIDS_UNIT="$(dirname "$GATE")/../recipes-core/atc/files/atcd-hook-subids.service"
+[ -f "$SUBIDS_UNIT" ] || {
+  echo "FAIL: no subordinate-id unit at $SUBIDS_UNIT" >&2
+  exit 1
+}
 
 failures=0
 tmp="$(mktemp -d)"
@@ -59,6 +66,7 @@ make_fixture() {
   cp "$GATE" "$root/meta-atc/scripts/check-meta-atc-recipe.sh"
   chmod +x "$root/meta-atc/scripts/check-meta-atc-recipe.sh"
   cp "$HELPER" "$root/meta-atc/recipes-core/atc/files/atcd-index-digest.py"
+  cp "$SUBIDS_UNIT" "$root/meta-atc/recipes-core/atc/files/atcd-hook-subids.service"
 
   # The signed index of the pinned release: one line of compact JSON, as the
   # origin serves it. The agency/atc entry holds digests that must not satisfy
@@ -93,6 +101,11 @@ FILES:${PN}-boot-confirm = "${ATCD_GUARD_PATH}"
 FILES:${PN} = "${ATCD_REMOTE_PATH}"
 FILES:${PN}-service = "${ATCD_LINK_PATH} \
     ${sysconfdir}/sudoers.d/atc-shell ${localstatedir}/lib/systemd/linger"
+SYSTEMD_SERVICE:${PN}-service = "atcd.service atcd-hook-subids.service"
+# shadow owns ${sysconfdir}/subuid and ${sysconfdir}/subgid.
+pkg_postinst:${PN}-service() {
+    sh $D${libexecdir}/atcd/atcd-hook-subids "$D"
+}
 ATCD_LIBEXEC = "/usr/local/libexec"
 ATCD_REMOTE_PATH = "${bindir}/atcd"
 ATCD_EXPECTED_ELF_MACHINE:qemux86-64 = "Advanced Micro Devices X86-64"
@@ -415,7 +428,37 @@ expect fail "a layer with no digest helper is caught" "$dhelper"
     's#${sysconfdir}/sudoers.d/atc-shell#${sysconfdir}/sudoers.d#'
   atcd_recipe_case owns-sudoers-dir-eol "the sudoers.d directory at a line end is caught" \
     's#${sysconfdir}/sudoers.d/atc-shell ${localstatedir}/lib/systemd/linger"#${localstatedir}/lib/systemd/linger \\\n    ${sysconfdir}/sudoers.d"#'
+  atcd_recipe_case subids-unit-not-enabled "a subordinate-id unit that is not enabled is caught" \
+    's/^SYSTEMD_SERVICE:${PN}-service = .*/SYSTEMD_SERVICE:${PN}-service = "atcd.service"/'
+  atcd_recipe_case subids-unit-name-prefix "an enabled unit that only starts with the name is caught" \
+    's/atcd-hook-subids\.service"/atcd-hook-subids.service-old"/'
+  atcd_recipe_case subids-postinst-other-script "a postinst that does not run the boot unit's script is caught" \
+    's#atcd/atcd-hook-subids "$D"#atcd/atcd-store-seed "$D"#'
+  atcd_recipe_case subids-postinst-own-write "a postinst that writes /etc/subuid itself is caught" \
+    's#^    sh $D${libexecdir}/atcd/atcd-hook-subids "$D"#    echo atc-hooks:1:1 >> $D${sysconfdir}/subuid#'
+  atcd_recipe_case subids-owned "a package that owns /etc/subgid is caught" \
+    's#${localstatedir}/lib/systemd/linger"#${localstatedir}/lib/systemd/linger /etc/subgid"#'
 }
+
+# 3l. The boot unit of the subordinate ids: missing, not installed, not run,
+#     skipped by a condition.
+subids_unit_case() { # <name> <description> <sed expression | "rm">
+  local d="$tmp/$1" unit
+  make_fixture "$d"
+  unit="$d/meta-atc/recipes-core/atc/files/atcd-hook-subids.service"
+  if [ "$3" = rm ]; then
+    rm "$unit"
+  else
+    sed -i -e "$3" "$unit"
+  fi
+  expect fail "$2" "$d"
+}
+subids_unit_case subids-unit-missing "a layer with no subordinate-id unit is caught" rm
+subids_unit_case subids-unit-no-install "a subordinate-id unit with no WantedBy is caught" '/^WantedBy=/d'
+subids_unit_case subids-unit-other-exec "a subordinate-id unit that runs another script is caught" \
+  's#^ExecStart=.*#ExecStart=/bin/true#'
+subids_unit_case subids-unit-condition "a subordinate-id unit with a condition is caught" \
+  's#^\[Unit\]$#[Unit]\nConditionPathIsReadWrite=/etc#'
 
 for conf in layer.conf distro/include/atc.inc; do
   case_n_accept=$((${case_n_accept:-0} + 1))
