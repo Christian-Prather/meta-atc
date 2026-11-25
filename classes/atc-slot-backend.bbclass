@@ -12,6 +12,9 @@
 #
 inherit atc-slot-backend-map
 OVERRIDES .= ":atc-slot-${ATC_SLOT_BACKEND}"
+# The lab opt-in ATC_RAUC_CHILD_SLOTS. Inherited after the line above, so its
+# override comes later in OVERRIDES and wins over the backend's.
+inherit atc-rauc-child-slots
 
 # Every recipe that inherits this class differs by backend, so on `none` it
 # has nothing to build. It is skipped with the reason, not failed: bitbake

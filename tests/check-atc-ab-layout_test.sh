@@ -67,6 +67,11 @@ SEED_UNIT_REL="recipes-core/atc/files/atcd-store-seed.service"
 SEED_REL="recipes-core/atc/files/atcd-store-seed"
 TMPFILES_REL="recipes-core/atc/files/atcd.conf"
 HOOK_REL="recipes-core/bundles/files/atc-bundle-hook"
+CHILD_CONF_REL="recipes-core/rauc/files/system-nvbootctrl-child-slots.conf"
+CHILD_CLASS_REL="classes/atc-rauc-child-slots.bbclass"
+UDA_REL="recipes-bsp/atc-tegra-uda/atc-tegra-uda_1.0.bb"
+RAUC_DATA_DROPIN_REL="recipes-core/atc-os/files/10-atc-rauc-data.conf"
+RAUC_DATA_TMPFILES_REL="recipes-core/atc-os/files/atc-rauc-data.conf"
 
 ALL_REL=("$WKS_REL" "$CFG_REL" "$RECIPE_REL" "$GRUB_APPEND_REL" "$CONF_REL"
   "$POLICY_REL" "$RAUC_APPEND_REL" "$BUNDLE_REL" "$RUNTIME_REL" "$IMAGE_REL"
@@ -76,7 +81,9 @@ ALL_REL=("$WKS_REL" "$CFG_REL" "$RECIPE_REL" "$GRUB_APPEND_REL" "$CONF_REL"
   "$SLOT_TRIAL_REL" "$ATC_CONF_REL" "$HOOK_REL" "$STORE_DROPIN_REL"
   "$SEAM_MAP_REL" "$RAUC_CONF_BBAPPEND_REL" "$RAUC_BBAPPEND_REL" "$GRUB_BBAPPEND_REL"
   "$BOOT_DROPIN_REL" "$RAUC_VERSION_REL" "$RAUC_NATIVE_REL" "$RAUC_SDK_REL"
-  "$ATCD_RECIPE_REL" "$ATCD_UNIT_REL" "$SEED_UNIT_REL" "$SEED_REL" "$TMPFILES_REL")
+  "$ATCD_RECIPE_REL" "$ATCD_UNIT_REL" "$SEED_UNIT_REL" "$SEED_REL" "$TMPFILES_REL"
+  "$CHILD_CONF_REL" "$CHILD_CLASS_REL" "$UDA_REL" "$RAUC_DATA_DROPIN_REL"
+  "$RAUC_DATA_TMPFILES_REL")
 
 make_fixture() {
   local root="$1" rel
@@ -515,6 +522,75 @@ mutate "a hook that stages another name is caught" "$HOOK_REL" \
   's|/tegra-bl.cap"$|/capsule.cap"|' "does not stage"
 mutate "a hook that arms is caught" "$HOOK_REL" \
   's|^\(    "\$tool" stage "\$capsule" .*\)$|\1\n    "$tool" arm B|' "arms the capsule"
+
+# The child-slot opt-in, ATC_RAUC_CHILD_SLOTS.
+mutate "an opt-in on by default is caught" "$CHILD_CLASS_REL" \
+  's/^ATC_RAUC_CHILD_SLOTS ??= ""$/ATC_RAUC_CHILD_SLOTS ??= "1"/' "default ATC_RAUC_CHILD_SLOTS to empty"
+mutate "an opt-in turned on in atc.inc is caught" "$ATC_CONF_REL" \
+  '$a ATC_RAUC_CHILD_SLOTS = "1"' "must stay off by default"
+mutate "an override for any value is caught" "$CHILD_CLASS_REL" \
+  "s/ == '1' else ''}\"/ else ''}\"/" "does not add the override for"
+mutate "an opt-in that any backend takes is caught" "$CHILD_CLASS_REL" \
+  "s/d.getVar('ATC_SLOT_BACKEND') != 'nvbootctrl'/False/" "on a backend other than nvbootctrl"
+mutate "an opt-in override before the backend's is caught" "$SEAM_REL" \
+  '/^inherit atc-rauc-child-slots$/d; s/^inherit atc-slot-backend-map$/&\ninherit atc-rauc-child-slots/' \
+  "after its OVERRIDES line"
+mutate "a UDA without the opt-in class is caught" "$UDA_REL" \
+  '/^inherit atc-rauc-child-slots$/d' "atc-tegra-uda does not inherit"
+mutate "a child conf with another compatible is caught" "$CHILD_CONF_REL" \
+  's/^compatible=.*/compatible=atc-tegra234/' "differs from system-nvbootctrl.conf"
+mutate "a child conf without the pre-install handler is caught" "$CHILD_CONF_REL" \
+  '/^pre-install=/d' "differs from system-nvbootctrl.conf"
+mutate "a child conf with its rootfs B on APP is caught" "$CHILD_CONF_REL" \
+  's|by-partlabel/APP_b$|by-partlabel/APP|' "differs from system-nvbootctrl.conf"
+mutate "a RAUC data directory in the store is caught" "$CHILD_CONF_REL" \
+  's|^data-directory=/data/rauc$|data-directory=/var/atc/rauc|' "not /data/rauc"
+mutate "a RAUC data directory in the slot is caught" "$CHILD_CONF_REL" \
+  's|^data-directory=/data/rauc$|data-directory=/var/lib/rauc|' "not /data/rauc"
+mutate "a kernel child slot on the other partition is caught" "$CHILD_CONF_REL" \
+  's|by-partlabel/A_kernel$|by-partlabel/B_kernel|' "[slot.kernel.0] does not name"
+mutate "a dtb child slot on the kernel partition is caught" "$CHILD_CONF_REL" \
+  's|by-partlabel/B_kernel-dtb$|by-partlabel/B_kernel|' "[slot.dtb.1] does not name"
+mutate "a child slot under the other parent is caught" "$CHILD_CONF_REL" \
+  '/^\[slot\.dtb\.1\]$/,/^$/s/^parent=rootfs\.1$/parent=rootfs.0/' "[slot.dtb.1] does not have parent=rootfs.1"
+mutate "a child slot of type ext4 is caught" "$CHILD_CONF_REL" \
+  '/^\[slot\.kernel\.1\]$/,/^$/s/^type=raw$/type=ext4/' "[slot.kernel.1] is not type=raw"
+mutate "a child slot with a bootname is caught" "$CHILD_CONF_REL" \
+  's/^parent=rootfs\.0$/parent=rootfs.0\nbootname=A/' "has a bootname"
+mutate "a missing dtb child slot is caught" "$CHILD_CONF_REL" \
+  '/^\[slot\.dtb\.0\]$/,/^$/d' "[slot.dtb.0] does not name"
+mutate "a child conf that rauc-conf never installs is caught" "$RAUC_CONF_APPEND_REL" \
+  '/^ATC_RAUC_SYSTEM_CONF:atc-rauc-child-slots /d' "does not install system-nvbootctrl-child-slots.conf"
+mutate "a child fstab with UDA still on /var/atc is caught" "$RUNTIME_REL" \
+  's|^PARTLABEL=UDA  /data  |PARTLABEL=UDA  /var/atc  |' "does not mount PARTLABEL=UDA on /data"
+mutate "a child fstab UDA mount without nofail is caught" "$RUNTIME_REL" \
+  '/^PARTLABEL=UDA  \/data /s/defaults,nofail,/defaults,/' "does not mount PARTLABEL=UDA on /data"
+mutate "a child fstab without the store bind is caught" "$RUNTIME_REL" \
+  '/^\/data\/atc  /d' "does not bind /data/atc onto /var/atc"
+mutate "a child fstab outside its variant is caught" "$RUNTIME_REL" \
+  's/^atc_install_fstab_entries:atc-rauc-child-slots() {$/atc_install_fstab_entries:other() {/' \
+  "mounts a PARTLABEL outside a backend variant"
+mutate "a UDA without atc/ is caught" "$UDA_REL" \
+  '/debugfs -w -R "mkdir atc"/d' "the /var/atc bind has no source"
+mutate "a RAUC data directory open to all is caught" "$RAUC_DATA_TMPFILES_REL" \
+  's|^d /data/rauc 0700 root root -$|d /data/rauc 0755 root root -|' "as root, mode 0700"
+mutate "a RAUC that does not wait for /data is caught" "$RAUC_DATA_DROPIN_REL" \
+  '/^RequiresMountsFor=/d' "does not require the mount of /data/rauc"
+mutate "RAUC data files on every backend are caught" "$OS_RECIPE_REL" \
+  's/^SRC_URI:append:atc-rauc-child-slots = /SRC_URI:append = /' "fetch the RAUC data files"
+mutate "a RAUC data drop-in never installed is caught" "$OS_RECIPE_REL" \
+  '/10-atc-rauc-data.conf ${D}/d' "does not install the RAUC data drop-in"
+mutate "RAUC data tmpfiles never installed are caught" "$OS_RECIPE_REL" \
+  '/atc-rauc-data.conf ${D}${nonarch_libdir}/d' "does not install atc-rauc-data.conf"
+mutate "child bundle slots on every build are caught" "$BUNDLE_REL" \
+  's/^RAUC_BUNDLE_SLOTS:append:atc-rauc-child-slots = /RAUC_BUNDLE_SLOTS:append = /' \
+  "does not add the kernel and dtb slots"
+mutate "a kernel slot with another file is caught" "$BUNDLE_REL" \
+  's/^RAUC_SLOT_kernel\[file\] = .*/RAUC_SLOT_kernel[file] = "Image"/' "RAUC_SLOT_kernel[file]"
+mutate "a dtb slot with another file is caught" "$BUNDLE_REL" \
+  's|^RAUC_SLOT_dtb\[file\] = .*|RAUC_SLOT_dtb[file] = "${MACHINE}.dtb"|' "RAUC_SLOT_dtb[file]"
+mutate "a dtb slot from another recipe is caught" "$BUNDLE_REL" \
+  's|^RAUC_SLOT_dtb = .*|RAUC_SLOT_dtb = "linux-tegra"|' 'RAUC_SLOT_dtb = '
 
 missing="$tmp/missing"
 make_fixture "$missing"

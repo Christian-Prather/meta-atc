@@ -341,9 +341,53 @@ whole-disk image written to a running device erases its store and its identity.
 | `ATC_TEST_RECIPES` | empty | `1` lets the fault bundles and images under `recipes-test/` build. They are signed with `RAUC_KEY_FILE` and do not boot, so set it only with test keys |
 | `ATC_TEGRA_REDUNDANT` | `1` | `0` selects meta-tegra's single-rootfs layout. The A/B targets are then skipped |
 | `ATCD_NETRC_DIR` | empty | a directory with a `.netrc` file for the atcd download. See "Fetch credential" |
+| `ATC_RAUC_CHILD_SLOTS` | empty | `1` adds kernel and dtb child slots and keeps the RAUC status on `UDA`, on a Jetson only. A lab layout. See "Child slots and a shared RAUC status (lab)" |
 
 Set them in `local.conf`, or in `conf/auto.conf` when a script writes
 `local.conf`.
+
+## Child slots and a shared RAUC status (lab)
+
+`ATC_RAUC_CHILD_SLOTS = "1"` builds a second RAUC layout on a Jetson
+(nvbootctrl backend). Use it to prove that atcd handles a RAUC setup with
+child slots and a central status file that survives a slot switch. Do not set
+it for a product image unless the product needs this layout.
+
+Unset, empty or `0`, it changes nothing. Any other value skips the A/B
+targets with the reason. On a machine with another backend, `1` skips them
+too.
+
+With the setting, the image and the bundle change in four ways:
+
+- `/etc/rauc/system.conf` gets two child slots under each rootfs slot, on the
+  NVMe partitions that the redundant flash layout already has:
+
+  | Slot | Device | Parent |
+  |---|---|---|
+  | `kernel.0` | `/dev/disk/by-partlabel/A_kernel` | `rootfs.0` |
+  | `dtb.0` | `/dev/disk/by-partlabel/A_kernel-dtb` | `rootfs.0` |
+  | `kernel.1` | `/dev/disk/by-partlabel/B_kernel` | `rootfs.1` |
+  | `dtb.1` | `/dev/disk/by-partlabel/B_kernel-dtb` | `rootfs.1` |
+
+  Each is `type=raw`. The file is
+  `recipes-core/rauc/files/system-nvbootctrl-child-slots.conf`.
+- `atc-bundle` writes both child slots of the target rootfs, so RAUC records
+  the install's transaction on all three slots. The kernel slot gets
+  `${INITRAMFS_IMAGE}-${MACHINE}.cboot` and the dtb slot gets
+  `devicetree/<first KERNEL_DEVICETREE entry>` from the deploy directory.
+  These are the files that tegraflash writes to `A_kernel` and `A_kernel-dtb`
+  at the factory flash. L4TLauncher boots from them when a slot has no
+  usable `extlinux.conf`. The bundle is skipped when the build differs from
+  the meta-tegra defaults that make this true (`atc-bundle.bb` names them).
+  The fault bundles under `recipes-test/` write the same child slots.
+- RAUC's `data-directory` is `/data/rauc` on `UDA`, so the central status
+  file survives a slot switch. It cannot be under `/var/atc`: atcd owns every
+  name at the store root. So `UDA` mounts on `/data`, and its directory `atc/`
+  binds onto `/var/atc`. The store path does not change. `atc-tegra-uda`
+  puts `atc/` in the factory filesystem. systemd-tmpfiles makes `/data/rauc`
+  (root, `0700`), and a drop-in holds `rauc.service` until `/data` is mounted.
+- The `UDA` filesystem has a different layout. Flash a board again when you
+  turn the setting on or off. A bundle cannot change it.
 
 ## Repository layout
 

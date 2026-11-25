@@ -27,6 +27,22 @@ do_compile() {
     mkfs.ext4 -F -q -b 4096 -T default -L atcdata -E root_owner=0:0 ${B}/atc-uda.ext4
 }
 
+# The lab opt-in ATC_RAUC_CHILD_SLOTS (atc-rauc-child-slots.bbclass). UDA
+# then mounts on /data, and its directory atc/ binds onto /var/atc
+# (atc-ab-runtime.inc). A bind mount needs its source before
+# systemd-tmpfiles runs, so the factory filesystem carries atc/. debugfs makes
+# it owned by root, and tmpfiles (atcd.conf) gives /var/atc to user atc at
+# boot, as it does with the opt-in off.
+inherit atc-rauc-child-slots
+
+do_compile:append:atc-rauc-child-slots() {
+    debugfs -w -R "mkdir atc" ${B}/atc-uda.ext4
+    debugfs -w -R "set_inode_field atc mode 040750" ${B}/atc-uda.ext4
+    if ! debugfs -R "stat atc" ${B}/atc-uda.ext4 2>/dev/null | grep -q 'Type: directory'; then
+        bbfatal "atc-uda.ext4 has no directory atc/, so the /var/atc bind mount has no source"
+    fi
+}
+
 do_deploy() {
     install -D -m 0644 ${B}/atc-uda.ext4 ${DEPLOYDIR}/atc-uda.ext4
 }

@@ -67,6 +67,66 @@ RAUC_BUNDLE_HOOKS[file] = "atc-bundle-hook"
 RAUC_BUNDLE_EXTRA_FILES:append:atc-slot-nvbootctrl = " tegra-bl.cap"
 RAUC_BUNDLE_EXTRA_DEPENDS:append:atc-slot-nvbootctrl = " tegra-uefi-capsules"
 
+# The lab opt-in ATC_RAUC_CHILD_SLOTS (atc-rauc-child-slots.bbclass), on the
+# nvbootctrl backend only. system-nvbootctrl-child-slots.conf gives each
+# rootfs two child slots, kernel on A_kernel/B_kernel and dtb on
+# A_kernel-dtb/B_kernel-dtb. The bundle writes both, with the files that
+# tegraflash writes to those partitions at the factory flash, from the same
+# build. L4TLauncher reads them when it boots without extlinux.conf, so a slot
+# must never get other content.
+#
+# What meta-tegra writes there (the commit in conf/layers.pin):
+#   kernel  IMAGE_TEGRAFLASH_KERNEL, from tegra_kernel_image() in
+#           classes-recipe/image_types_tegra.bbclass. With the meta-tegra
+#           defaults (INITRAMFS_IMAGE = "tegra-minimal-initramfs",
+#           INITRAMFS_IMAGE_BUNDLE = "0") that is
+#           ${DEPLOY_DIR_IMAGE}/${INITRAMFS_IMAGE}-${MACHINE}.cboot, an
+#           Android boot image of the kernel and the initramfs. The package
+#           copies it to boot.img (LNXFILE) for A_kernel and B_kernel.
+#   dtb     DTBFILE, the first entry of KERNEL_DEVICETREE. copy_dtbs() takes
+#           it from virtual/dtb (nvidia-kernel-oot-dtb), which also deploys
+#           it to ${DEPLOY_DIR_IMAGE}/devicetree/. tegra-flash-helper.sh
+#           copies it to kernel_<DTBFILE> for A_kernel-dtb and B_kernel-dtb.
+# The anonymous function below skips the bundle for any setting where these
+# names are not the files tegraflash writes.
+RAUC_BUNDLE_SLOTS:append:atc-rauc-child-slots = " kernel dtb"
+
+ATC_KERNEL_DTB ?= "${@d.getVar('DTBFILE') or (os.path.basename(((d.getVar('KERNEL_DEVICETREE') or '').split() or [''])[0]))}"
+
+RAUC_SLOT_kernel = "${INITRAMFS_IMAGE}"
+RAUC_SLOT_kernel[type] = "file"
+RAUC_SLOT_kernel[file] = "${INITRAMFS_IMAGE}-${MACHINE}.cboot"
+RAUC_SLOT_kernel[depends] = "${INITRAMFS_IMAGE}:do_image_complete"
+
+RAUC_SLOT_dtb = "${PREFERRED_PROVIDER_virtual/dtb}"
+RAUC_SLOT_dtb[type] = "file"
+RAUC_SLOT_dtb[file] = "devicetree/${ATC_KERNEL_DTB}"
+
+python () {
+    if d.getVar('ATC_RAUC_CHILD_SLOTS') != '1':
+        return
+    reasons = []
+    if not d.getVar('INITRAMFS_IMAGE'):
+        reasons.append("INITRAMFS_IMAGE is empty, so tegraflash writes the "
+                       "kernel recipe's .cboot to A_kernel")
+    if bb.utils.to_boolean(d.getVar('INITRAMFS_IMAGE_BUNDLE')):
+        reasons.append("INITRAMFS_IMAGE_BUNDLE is 1, so tegraflash writes the "
+                       "kernel recipe's bundled .cboot to A_kernel")
+    if not d.getVar('PREFERRED_PROVIDER_virtual/dtb'):
+        reasons.append("no PREFERRED_PROVIDER_virtual/dtb, so tegraflash takes "
+                       "the kernel DTB from another place")
+    if not d.getVar('ATC_KERNEL_DTB'):
+        reasons.append("KERNEL_DEVICETREE names no DTB")
+    if d.getVar('TEGRA_UEFI_DB_KEY') or d.getVar('TEGRA_UEFI_DB_CERT'):
+        reasons.append("UEFI signing is on, so tegraflash writes the .signed "
+                       "DTB")
+    if reasons:
+        raise bb.parse.SkipRecipe(
+            "ATC_RAUC_CHILD_SLOTS = \"1\" writes the kernel and kernel-dtb "
+            "partitions with the meta-tegra default files only: %s"
+            % "; ".join(reasons))
+}
+
 # qemux86-64 only on the GRUB backend, the same narrowness as
 # atc-grub-env_1.0.bb: the compatible string, the GRUB config and the slot labels
 # all name this one machine. On the nvbootctrl backend, every Orin machine.

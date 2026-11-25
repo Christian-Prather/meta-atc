@@ -15,6 +15,11 @@
 #   recipes-core/images/atc-ab-runtime.inc          the runtime profile
 #   recipes-core/images/atc-image-ab.bb             what reaches the ESP
 #   recipes-core/images/atc-image-slot.bb           the slot image
+#   classes/atc-rauc-child-slots.bbclass            the child-slot opt-in
+#
+# The opt-in ATC_RAUC_CHILD_SLOTS adds a second Tegra system.conf, an fstab
+# variant, a RAUC drop-in and two bundle slots. The last section checks that
+# they agree with each other, and that the opt-in stays off by default.
 #
 # Every failure this gate catches is SILENT at build time. A label renamed in
 # the wks and not in grub.cfg still builds an image; it boots to a GRUB rescue
@@ -40,6 +45,9 @@ RECIPE="$L/recipes-bsp/atc-grub-env/atc-grub-env_1.0.bb"
 GRUB_APPEND="$L/recipes-bsp/grub/grub-efi-atc.inc"
 SYSTEM_CONF="$L/recipes-core/rauc/files/system.conf"
 TEGRA_CONF="$L/recipes-core/rauc/files/system-nvbootctrl.conf"
+CHILD_CONF="$L/recipes-core/rauc/files/system-nvbootctrl-child-slots.conf"
+CHILD_CLASS="$L/classes/atc-rauc-child-slots.bbclass"
+UDA_RECIPE="$L/recipes-bsp/atc-tegra-uda/atc-tegra-uda_1.0.bb"
 RAUC_CONF_APPEND="$L/recipes-core/rauc/rauc-conf-atc.inc"
 OS_RECIPE="$L/recipes-core/atc-os/atc-os_1.0.bb"
 SEAM="$L/classes/atc-slot-backend.bbclass"
@@ -147,7 +155,8 @@ for f in "$WKS" "$GRUB_CFG" "$RECIPE" "$GRUB_APPEND" "$SYSTEM_CONF" "$TEGRA_CONF
   "$OS_DIR/atc-os-reboot.path" "$OS_DIR/atc-os-reboot.service" \
   "$OS_DIR/10-atc-store.conf" "$OS_DIR/10-atc-boot.conf" "$KERNEL_APPEND" "$WATCHDOG_CFG" "$ATC_CONF" "$HOOK" \
   "$ATCD_RECIPE" "$ATCD_FILES/atcd.service" "$ATCD_FILES/atcd-store-seed.service" \
-  "$ATCD_FILES/atcd-store-seed" "$ATCD_FILES/atcd.conf"; do
+  "$ATCD_FILES/atcd-store-seed" "$ATCD_FILES/atcd.conf" "$CHILD_CONF" "$CHILD_CLASS" \
+  "$UDA_RECIPE" "$OS_DIR/10-atc-rauc-data.conf" "$OS_DIR/atc-rauc-data.conf"; do
   if [ ! -f "$f" ]; then
     echo "FAIL: missing $f" >&2
     exit 1
@@ -484,7 +493,8 @@ grep -q '^PARTLABEL=UDA  */var/atc  *ext4  *[^ ]*x-systemd\.growfs' <<< "$nv_fst
   fail "the runtime profile mounts no PARTLABEL=UDA on /var/atc with x-systemd.growfs on" \
     "atc-slot-nvbootctrl, so the Tegra store lives inside the slot being replaced"
 if grep -q 'PARTLABEL=' < <(sed -e '/^atc_install_fstab_entries:atc-slot-grub() {$/,/^}$/d' \
-  -e '/^atc_install_fstab_entries:atc-slot-nvbootctrl() {$/,/^}$/d' "$RUNTIME" | grep -v '^#'); then
+  -e '/^atc_install_fstab_entries:atc-slot-nvbootctrl() {$/,/^}$/d' \
+  -e '/^atc_install_fstab_entries:atc-rauc-child-slots() {$/,/^}$/d' "$RUNTIME" | grep -v '^#'); then
   fail "the runtime profile mounts a PARTLABEL outside a backend variant," \
     "so one backend's slot waits on a partition its layout does not have"
 fi
@@ -903,6 +913,113 @@ for pair in 'slot.rootfs.0 A APP' 'slot.rootfs.1 B APP_b'; do
   [ "$(nv "$section" device)" = "/dev/disk/by-partlabel/$label" ] ||
     fail "system-nvbootctrl.conf [$section] does not name /dev/disk/by-partlabel/$label"
 done
+
+# ── The child-slot opt-in (ATC_RAUC_CHILD_SLOTS) ─────────────────────────────
+#
+# A lab layout on the nvbootctrl backend: kernel and dtb child slots under
+# each rootfs, and RAUC's status on UDA. Off by default, and off it must change
+# nothing: every line it adds is keyed on the atc-rauc-child-slots override.
+
+# Off by default. The class defaults it to empty, and no layer file turns it on.
+grep -qx 'ATC_RAUC_CHILD_SLOTS ??= ""' "$CHILD_CLASS" ||
+  fail "atc-rauc-child-slots.bbclass does not default ATC_RAUC_CHILD_SLOTS to empty"
+opt_in_dirs=()
+for d in conf classes recipes-core recipes-bsp recipes-test dynamic-layers; do
+  [ -d "$L/$d" ] && opt_in_dirs+=("$L/$d")
+done
+if grep -rqE '^[[:space:]]*ATC_RAUC_CHILD_SLOTS[[:space:]]*(\?\?=|\?=|:=|=)[[:space:]]*"1"' \
+  "${opt_in_dirs[@]}"; then
+  fail "a layer file sets ATC_RAUC_CHILD_SLOTS = \"1\"; the opt-in must stay off by default"
+fi
+grep -qxF "OVERRIDES .= \"\${@':atc-rauc-child-slots' if d.getVar('ATC_RAUC_CHILD_SLOTS') == '1' else ''}\"" "$CHILD_CLASS" ||
+  fail "atc-rauc-child-slots.bbclass does not add the override for ATC_RAUC_CHILD_SLOTS = \"1\" alone"
+grep -qF "d.getVar('ATC_SLOT_BACKEND') != 'nvbootctrl'" "$CHILD_CLASS" ||
+  fail "atc-rauc-child-slots.bbclass does not refuse the opt-in on a backend other than nvbootctrl"
+# The override must come after the backend's, or the backend's value wins.
+seam_override="$(line_of 'OVERRIDES .= ":atc-slot-${ATC_SLOT_BACKEND}"' "$SEAM")"
+seam_inherit="$(line_of 'inherit atc-rauc-child-slots' "$SEAM")"
+if [ -z "$seam_override" ] || [ -z "$seam_inherit" ] || [ "$seam_inherit" -lt "$seam_override" ]; then
+  fail "atc-slot-backend.bbclass does not inherit atc-rauc-child-slots after its OVERRIDES line," \
+    "so the backend's values win over the opt-in's"
+fi
+grep -qx 'inherit atc-rauc-child-slots' "$UDA_RECIPE" ||
+  fail "atc-tegra-uda does not inherit atc-rauc-child-slots, so its UDA has no atc/ for the bind"
+
+# The child system.conf is system-nvbootctrl.conf with two changes: the data
+# directory, and the child slots. Anything else is drift between the two.
+child_base="$(awk '
+  /^\[/ { skip = ($0 ~ /^\[slot\.(kernel|dtb)\.[01]\]$/) }
+  !skip { print }
+' "$CHILD_CONF" | sed 's|^data-directory=/data/rauc$|data-directory=/var/lib/rauc|' | cat -s)"
+if [ "$child_base" != "$(cat -s "$TEGRA_CONF")" ]; then
+  fail "system-nvbootctrl-child-slots.conf differs from system-nvbootctrl.conf in more" \
+    "than its data directory and its child slots"
+fi
+child() { SYSTEM_CONF="$CHILD_CONF" conf_value "$@"; }
+child_data_dir="$(child system data-directory)"
+[ "$child_data_dir" = /data/rauc ] ||
+  fail "system-nvbootctrl-child-slots.conf has data-directory=$child_data_dir, not /data/rauc on UDA"
+case "$child_data_dir/" in
+  /var/atc/*) fail "the RAUC data directory is in the atcd store, whose root names atcd owns" ;;
+esac
+for quad in 'kernel.0 A_kernel rootfs.0' 'dtb.0 A_kernel-dtb rootfs.0' \
+  'kernel.1 B_kernel rootfs.1' 'dtb.1 B_kernel-dtb rootfs.1'; do
+  read -r section label parent <<< "$quad"
+  [ "$(child "slot.$section" device)" = "/dev/disk/by-partlabel/$label" ] ||
+    fail "system-nvbootctrl-child-slots.conf [slot.$section] does not name /dev/disk/by-partlabel/$label"
+  [ "$(child "slot.$section" type)" = raw ] ||
+    fail "system-nvbootctrl-child-slots.conf [slot.$section] is not type=raw"
+  [ "$(child "slot.$section" parent)" = "$parent" ] ||
+    fail "system-nvbootctrl-child-slots.conf [slot.$section] does not have parent=$parent"
+  [ -z "$(child "slot.$section" bootname)" ] ||
+    fail "system-nvbootctrl-child-slots.conf [slot.$section] has a bootname; only a rootfs slot has one"
+done
+grep -qx 'ATC_RAUC_SYSTEM_CONF:atc-rauc-child-slots = "system-nvbootctrl-child-slots.conf"' "$RAUC_CONF_APPEND" ||
+  fail "rauc-conf-atc.inc does not install system-nvbootctrl-child-slots.conf on atc-rauc-child-slots"
+
+# The mounts: UDA on /data, and its atc/ bound onto /var/atc.
+child_fstab="$(sed -n '/^atc_install_fstab_entries:atc-rauc-child-slots() {$/,/^}$/p' "$RUNTIME")"
+grep -q '^PARTLABEL=UDA  */data  *ext4  *[^ ]*\bnofail\b[^ ]*x-systemd\.growfs' <<< "$child_fstab" ||
+  fail "the child-slot fstab does not mount PARTLABEL=UDA on /data, nofail, with x-systemd.growfs"
+grep -q '^/data/atc  */var/atc  *none  *bind,nofail\b' <<< "$child_fstab" ||
+  fail "the child-slot fstab does not bind /data/atc onto /var/atc, nofail"
+if grep -q 'PARTLABEL=UDA  */var/atc ' <<< "$child_fstab"; then
+  fail "the child-slot fstab mounts UDA on /var/atc too"
+fi
+grep -qF 'debugfs -w -R "mkdir atc" ${B}/atc-uda.ext4' \
+  < <(sed -n '/^do_compile:append:atc-rauc-child-slots() {$/,/^}$/p' "$UDA_RECIPE") ||
+  fail "atc-tegra-uda does not make atc/ on atc-rauc-child-slots, so the /var/atc bind has no source"
+
+# RAUC's data directory: tmpfiles makes it, and rauc.service waits for its mount.
+grep -qx "d $child_data_dir 0700 root root -" "$OS_DIR/atc-rauc-data.conf" ||
+  fail "atc-rauc-data.conf does not make $child_data_dir as root, mode 0700"
+if ! grep -qx '\[Unit\]' "$OS_DIR/10-atc-rauc-data.conf" ||
+  ! grep -qx "RequiresMountsFor=$child_data_dir" "$OS_DIR/10-atc-rauc-data.conf"; then
+  fail "the RAUC data drop-in does not require the mount of $child_data_dir"
+fi
+grep -qx 'SRC_URI:append:atc-rauc-child-slots = " file://10-atc-rauc-data.conf file://atc-rauc-data.conf"' "$OS_RECIPE" ||
+  fail "atc-os does not fetch the RAUC data files on atc-rauc-child-slots alone"
+os_child="$(sed -n '/^do_install:append:atc-rauc-child-slots() {$/,/^}$/p' "$OS_RECIPE")"
+grep -qxF '    install -m 0644 ${WORKDIR}/10-atc-rauc-data.conf ${D}${systemd_system_unitdir}/rauc.service.d/' <<< "$os_child" ||
+  fail "atc-os does not install the RAUC data drop-in in rauc.service.d on atc-rauc-child-slots"
+grep -qxF '    install -m 0644 ${WORKDIR}/atc-rauc-data.conf ${D}${nonarch_libdir}/tmpfiles.d/' <<< "$os_child" ||
+  fail "atc-os does not install atc-rauc-data.conf in tmpfiles.d on atc-rauc-child-slots"
+
+# The bundle writes both child slots, with the files tegraflash writes there.
+grep -qx 'RAUC_BUNDLE_SLOTS:append:atc-rauc-child-slots = " kernel dtb"' "$BUNDLE" ||
+  fail "the bundle does not add the kernel and dtb slots on atc-rauc-child-slots alone"
+for want in 'RAUC_SLOT_kernel[type] = "file"' \
+  'RAUC_SLOT_kernel[file] = "${INITRAMFS_IMAGE}-${MACHINE}.cboot"' \
+  'RAUC_SLOT_kernel[depends] = "${INITRAMFS_IMAGE}:do_image_complete"' \
+  'RAUC_SLOT_dtb = "${PREFERRED_PROVIDER_virtual/dtb}"' \
+  'RAUC_SLOT_dtb[type] = "file"' \
+  'RAUC_SLOT_dtb[file] = "devicetree/${ATC_KERNEL_DTB}"'; do
+  grep -qxF -- "$want" "$BUNDLE" ||
+    fail "the bundle does not have '$want', so a child slot gets a file tegraflash does not write"
+done
+if grep -qE '^RAUC_BUNDLE_SLOTS *(=|\+=|\?=).*\b(kernel|dtb)\b' "$BUNDLE"; then
+  fail "the bundle adds a child slot without the atc-rauc-child-slots override"
+fi
 
 if [ "$failures" -gt 0 ]; then
   echo "check-atc-ab-layout: $failures failure(s)" >&2

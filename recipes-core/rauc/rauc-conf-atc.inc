@@ -8,7 +8,8 @@
 # That file is the GRUB backend's. The nvbootctrl backend (tegra234) installs
 # system-nvbootctrl.conf in its place: `bootloader=custom`, whose handler wraps
 # nvbootctrl, on meta-tegra's APP and APP_b partitions. Both install at the one
-# path RAUC reads, /etc/rauc/system.conf.
+# path RAUC reads, /etc/rauc/system.conf. With ATC_RAUC_CHILD_SLOTS = "1",
+# system-nvbootctrl-child-slots.conf replaces it (see below).
 #
 # The keyring is NOT in this layer. scripts/check-meta-atc-recipe.sh fails
 # on any *.pem, *.key or *.crt in this layer. local.conf names it with an
@@ -22,6 +23,11 @@ inherit atc-slot-backend
 
 ATC_RAUC_SYSTEM_CONF = "system.conf"
 ATC_RAUC_SYSTEM_CONF:atc-slot-nvbootctrl = "system-nvbootctrl.conf"
+# The lab opt-in ATC_RAUC_CHILD_SLOTS (atc-rauc-child-slots.bbclass). The same
+# file as system-nvbootctrl.conf, plus the kernel and dtb child slots of each
+# rootfs, and the RAUC data directory on UDA. The class allows the override on
+# the nvbootctrl backend only, so the @MACHINE@ step below applies to it too.
+ATC_RAUC_SYSTEM_CONF:atc-rauc-child-slots = "system-nvbootctrl-child-slots.conf"
 
 # The base recipe fetches the keyring through SRC_URI and installs a copy of
 # meta-rauc's example CA when nothing overrides it. Both are replaced: the
