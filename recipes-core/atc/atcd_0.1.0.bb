@@ -12,14 +12,17 @@ HOMEPAGE = "https://github.com/Christian-Prather/meta-atc"
 # CLOSED, Yocto's name for a license with no text to ship. The guard in
 # ${PN}-boot-confirm is an atc script, which is MIT OR Apache-2.0. The units
 # and configuration files in ${PN}-service are the layer's own files, which
-# are MIT. install-atcd.sh only runs at build time and is in no package.
+# are MIT. newuidmap and newgidmap in ${PN}-podman-helpers are shadow-utils
+# (BSD-3-Clause), linked static with musl (MIT). install-atcd.sh only runs at
+# build time and is in no package.
 #
 # license.bbclass and license_image.bbclass expect no text for CLOSED, so
 # LIC_FILES_CHKSUM names MIT only.
-LICENSE = "CLOSED & (MIT | Apache-2.0)"
+LICENSE = "CLOSED & (MIT | Apache-2.0) & BSD-3-Clause"
 LICENSE:${PN} = "CLOSED"
 LICENSE:${PN}-boot-confirm = "MIT | Apache-2.0"
 LICENSE:${PN}-service = "MIT"
+LICENSE:${PN}-podman-helpers = "BSD-3-Clause & MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
 # A product must accept the atcd license before bitbake builds atcd. Without
@@ -99,8 +102,9 @@ SYSTEMD_SERVICE:${PN}-service = "atcd.service atcd-hook-subids.service"
 # ATCD_FOLLOW_TRACK names a track, for example "nightly". Each parse then reads
 # the current signed index of that track from ATCD_BASE_URL, like
 # SRCREV = "${AUTOREV}". The recipe sets ATCD_TRACK to that track, and takes
-# ATCD_VERSION, both ATCD_SHA256 values and ATCD_GUARD_SHA256 from the index.
-# A release with no guard entry skips the recipe. So a new release
+# ATCD_VERSION, both ATCD_SHA256 values, ATCD_GUARD_SHA256 and both
+# ATCD_PODMAN_SHA256 values from the index. A release with no guard entry or
+# no podman entry skips the recipe. So a new release
 # changes the task signature and rebuilds atcd and the image. The index and its
 # signature go to ATCD_FOLLOW_DIR, one directory for each version, and
 # do_compile checks them with install-atcd.sh as for a pin.
@@ -134,6 +138,17 @@ ATCD_SHA256:aarch64 = "539859d551eef311890aee625ad65a26b7eaee86ee3bf2ed68a9bd264
 # recipe takes it from the index, like ATCD_SHA256.
 ATCD_GUARD_SHA256 = "f91e86a53f5c5b6d7728bf0745f215e9f7bd4e832790b2ed56a068b6ecf549f6"
 
+# The podman bundle of the same release for each target. It is the "digest"
+# of the agency/podman entry in the signed index, and the blob address. The
+# blob is a tar.zst. The image takes only the setuid helpers newuidmap and
+# newgidmap from it (see "podman helpers" in README.md). do_compile refuses a
+# digest that the signed index does not name for ATCD_TARGET. In follow mode
+# the recipe takes both values from the index, like ATCD_SHA256.
+ATCD_PODMAN_SHA256 = ""
+ATCD_PODMAN_SHA256:x86-64 = "5b021086a5987864954e426523be1bad95daaa0bdcfa0c3579d3507b118ca62f"
+ATCD_PODMAN_SHA256:aarch64 = "54f42723bd766de411b02daf13736d52a23818a0317a48a83b38848dbcbf0ab2"
+ATCD_PODMAN_FILE = "podman-${ATCD_PODMAN_SHA256}.tar.zst"
+
 # The sha256 of install-atcd.sh, the script that verifies the index. It is
 # pinned here in both modes: a script that came from the index it verifies
 # would prove nothing. It is the "digest" of agency/install-atcd in a signed
@@ -157,6 +172,7 @@ SRC_URI = "file://atcd-release/index.json \
            https://atc.dev/agency/blobs/sha256/${ATCD_SHA256};downloadfilename=atcd-${ATCD_VERSION}-${ATCD_TARGET};sha256sum=${ATCD_SHA256} \
            https://atc.dev/agency/blobs/sha256/${ATCD_GUARD_SHA256};downloadfilename=${ATCD_GUARD_FILE};sha256sum=${ATCD_GUARD_SHA256} \
            https://atc.dev/agency/blobs/sha256/${ATCD_INSTALLER_SHA256};downloadfilename=${ATCD_INSTALLER_FILE};sha256sum=${ATCD_INSTALLER_SHA256} \
+           https://atc.dev/agency/blobs/sha256/${ATCD_PODMAN_SHA256};downloadfilename=${ATCD_PODMAN_FILE};sha256sum=${ATCD_PODMAN_SHA256};unpack=0 \
            "
 SRC_URI += "${ATCD_LAYER_FILES}"
 
@@ -233,6 +249,13 @@ def atcd_follow_track(d):
             if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
                 raise ValueError('bad digest %r for %s' % (digest, target))
             digests[override] = digest.split(':', 1)[1]
+        podman = {}
+        for pair in d.getVar('ATCD_FOLLOW_TARGETS').split():
+            override, target = pair.split(':', 1)
+            digest = doc['artifacts']['agency/podman'][target]['digest']
+            if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
+                raise ValueError('bad podman digest %r for %s' % (digest, target))
+            podman[override] = digest.split(':', 1)[1]
         guard = doc['artifacts']['agency/atcd-boot-confirm']['any']['digest']
         if not re.fullmatch(r'sha256:[0-9a-f]{64}', guard):
             raise ValueError('bad digest %r for the boot-confirm guard' % guard)
@@ -267,6 +290,8 @@ def atcd_follow_track(d):
     d.setVar('ATCD_VERSION', version)
     for override, digest in digests.items():
         d.setVar('ATCD_SHA256:' + override, digest)
+    for override, digest in podman.items():
+        d.setVar('ATCD_PODMAN_SHA256:' + override, digest)
     d.setVar('ATCD_GUARD_SHA256', guard.split(':', 1)[1])
     bb.debug(1, 'atcd: following %s at %s' % (track, version))
 
@@ -287,11 +312,16 @@ ATCD_EXPECTED_ELF_MACHINE:tegra234 = "AArch64"
 #   guard              /usr/local/libexec/atcd-boot-confirm.sh
 #   remote_path        /usr/local/bin/atcd, a symlink into the store
 #   store link         the store's current atcd, which atcd.service runs
+#   podman helpers     /usr/local/libexec/atc-podman/helpers/<podman digest>/
 ATCD_LIBEXEC = "/usr/local/libexec"
 ATCD_GUARD_PATH = "${ATCD_LIBEXEC}/atcd-boot-confirm.sh"
 ATCD_REMOTE_PATH = "${bindir}/atcd"
 ATCD_LINK_PATH = "/usr/local/bin/atcd"
 ATCD_STORE_LINK = "/var/atc/channel/agency/atcd/delivery/current/atcd/atcd"
+# The setuid helpers of the pinned podman bundle. The directory name is the
+# bundle digest with no "sha256:" prefix. It is on the rootfs and never on
+# /var/atc: root must not run a file that a non-root account can write.
+ATCD_PODMAN_HELPERS = "${ATCD_LIBEXEC}/atc-podman/helpers/${ATCD_PODMAN_SHA256}"
 
 S = "${WORKDIR}"
 
@@ -301,12 +331,13 @@ PACKAGE_ARCH = "${MACHINE_ARCH}"
 
 # readelf for the architecture check. OpenSSL 3 (ed25519 with -rawin) for the
 # install script: the native one, so the build host's version does not matter.
-# In local mode the script needs no curl.
-DEPENDS += "binutils-native openssl-native"
+# In local mode the script needs no curl. zstd for the podman bundle.
+DEPENDS += "binutils-native openssl-native zstd-native"
 
 do_compile() {
-    rm -f ${B}/atcd
-    if [ -z "${ATCD_TARGET}" ] || [ -z "${ATCD_SHA256}" ]; then
+    rm -f ${B}/atcd ${B}/podman.tar
+    rm -rf ${B}/podman-helpers
+    if [ -z "${ATCD_TARGET}" ] || [ -z "${ATCD_SHA256}" ] || [ -z "${ATCD_PODMAN_SHA256}" ]; then
         bbfatal "atcd has no pinned release for TARGET_ARCH=${TARGET_ARCH}."
     fi
     # The file names that the local mode of install-atcd.sh reads.
@@ -334,6 +365,27 @@ index of atcd ${ATCD_VERSION}."
         bbfatal "the signed index of atcd ${ATCD_VERSION} does not name the guard \
 ${ATCD_GUARD_SHA256}. ATCD_GUARD_SHA256 must be the digest of \
 agency/atcd-boot-confirm in atcd-release/index.json."
+    # The podman bundle: the same check at its JSON path. do_fetch checked
+    # that the blob has this sha256.
+    index_podman=$(python3 ${WORKDIR}/atcd-index-digest.py $local_dir/index.json \
+        agency/podman ${ATCD_TARGET}) ||
+        bbfatal "cannot read the agency/podman digest for ${ATCD_TARGET} from the \
+signed index of atcd ${ATCD_VERSION}."
+    [ "$index_podman" = "sha256:${ATCD_PODMAN_SHA256}" ] ||
+        bbfatal "the signed index of atcd ${ATCD_VERSION} does not name the podman \
+bundle ${ATCD_PODMAN_SHA256} for ${ATCD_TARGET}. ATCD_PODMAN_SHA256 must be the \
+digest of agency/podman in atcd-release/index.json."
+    # Take the two setuid helpers from the bundle. The helper refuses a member
+    # that is not a regular file, and a sha256 or size that differs from the
+    # signed manifest entry for its path.
+    zstd -d -q -f ${WORKDIR}/${ATCD_PODMAN_FILE} -o ${B}/podman.tar ||
+        bbfatal "zstd cannot decompress the podman bundle ${ATCD_PODMAN_SHA256}."
+    mkdir ${B}/podman-helpers
+    python3 ${WORKDIR}/atcd-index-digest.py $local_dir/index.json agency/podman ${ATCD_TARGET} \
+        --extract ${B}/podman.tar ${B}/podman-helpers bin/newuidmap bin/newgidmap > /dev/null ||
+        bbfatal "the podman bundle ${ATCD_PODMAN_SHA256} has no newuidmap and newgidmap \
+that match the signed manifest."
+    rm -f ${B}/podman.tar
 }
 
 do_install() {
@@ -413,17 +465,29 @@ readelf reports '${actual_machine}', expected '${ATCD_EXPECTED_ELF_MACHINE}'."
     install -d -m 0750 ${D}${sysconfdir}/sudoers.d
     install -m 0440 ${WORKDIR}/atc-shell.sudoers ${D}${sysconfdir}/sudoers.d/atc-shell
 
+    # The setuid helpers that atcd uses for rootless podman. atcd checks this
+    # tree before it uses it: owner root, group atc, mode 04750. Members of
+    # group atc can run them. Other users cannot.
+    install -d -m 0755 ${D}${ATCD_LIBEXEC}/atc-podman ${D}${ATCD_LIBEXEC}/atc-podman/helpers ${D}${ATCD_PODMAN_HELPERS}
+    for h in newuidmap newgidmap; do
+        [ -f ${B}/podman-helpers/$h ] || bbfatal "no $h at ${B}/podman-helpers. do_compile did not verify one."
+        install -o 0 -g ${ATC_GID} -m 04750 ${B}/podman-helpers/$h ${D}${ATCD_PODMAN_HELPERS}/$h
+    done
+
     # Linger for atc-hooks: hooks run `systemctl --user` services, and the
     # user's manager must run with no login session.
     install -d ${D}${localstatedir}/lib/systemd/linger
     touch ${D}${localstatedir}/lib/systemd/linger/atc-hooks
 }
 
-# The guard and the service are in their own packages, so each keeps its open
-# license and ${PN} holds the closed-source binary only. ${PN} depends on both,
-# so an image that installs atcd gets all three.
-PACKAGES =+ "${PN}-boot-confirm ${PN}-service"
+# The guard, the service and the podman helpers are in their own packages, so
+# each keeps its open license and ${PN} holds the closed-source binary only.
+# ${PN} depends on all three, so an image that installs atcd gets all four.
+PACKAGES =+ "${PN}-boot-confirm ${PN}-service ${PN}-podman-helpers"
 FILES:${PN}-boot-confirm = "${ATCD_GUARD_PATH}"
+# The helper tree, and nothing else. The image holds it, so it is there on a
+# read-only rootfs, where `atcd ctl setup-rootless --provision` cannot write.
+FILES:${PN}-podman-helpers = "${ATCD_LIBEXEC}/atc-podman"
 
 # Subordinate ids for atc-hooks, for rootless podman in hooks. A --system
 # user gets none from useradd. The postinst writes them into the image.
@@ -450,10 +514,15 @@ FILES:${PN}-service = "${ATCD_LINK_PATH} \
     ${systemd_system_unitdir} ${libexecdir}/atcd ${nonarch_libdir}/tmpfiles.d \
     ${sysconfdir}/sudoers.d/atc-shell ${localstatedir}/lib/systemd/linger"
 
-RDEPENDS:${PN} += "${PN}-boot-confirm ${PN}-service"
+RDEPENDS:${PN} += "${PN}-boot-confirm ${PN}-service ${PN}-podman-helpers"
+# The helpers belong to group atc, which ${PN}-service adds. The package
+# manager must install that package first, or the files get group root.
+RDEPENDS:${PN}-podman-helpers += "${PN}-service"
 # The sudoers rule needs sudo.
 RDEPENDS:${PN}-service += "sudo"
 
 # The release binary is a static musl ELF: it has no dynamic dependencies for
 # bitbake to resolve, and it is not built by this recipe's toolchain.
 INSANE_SKIP:${PN} += "already-stripped arch staticdev ldflags"
+# The helpers are static musl ELFs of the release too.
+INSANE_SKIP:${PN}-podman-helpers += "already-stripped arch staticdev ldflags"

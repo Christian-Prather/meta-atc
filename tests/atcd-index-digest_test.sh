@@ -104,6 +104,84 @@ else
   echo "ok: a UTF-16 index is refused"
 fi
 
+# --extract takes named members from a plain tar. Each must be one regular
+# file whose sha256 and size equal its entry in the signed manifest.
+bundle="$tmp/bundle"
+mkdir -p "$bundle/bin"
+printf 'uid helper\n' > "$bundle/bin/newuidmap"
+printf 'gid helper, longer\n' > "$bundle/bin/newgidmap"
+printf 'podman\n' > "$bundle/bin/podman"
+mentry() { # <path> [<sha256>] [<size>] [<type>]: one manifest entry
+  local f="$bundle/$1"
+  printf '{"path":"%s","sha256":"%s","size":%s,"type":"%s"}' "$1" \
+    "${2:-$(sha256sum "$f" | cut -d' ' -f1)}" "${3:-$(stat -c %s "$f")}" "${4:-file}"
+}
+podman_index() { # <manifest entries, comma-separated>
+  printf '{"artifacts":{"agency/podman":{"linux-x86_64-musl":{"digest":"%s","manifest":[%s]}}}}' \
+    "$pinned" "$1" > "$tmp/podman-index.json"
+}
+good_manifest="$(mentry bin/newgidmap),$(mentry bin/newuidmap),$(mentry bin/podman)"
+# names <dir>: the sorted names in <dir>, dot files too, each with a space.
+names() { find "$1" -mindepth 1 -printf '%f\n' | LC_ALL=C sort | tr '\n' ' '; }
+# expect_extract <name> <ok|refused> <tar>: run --extract into a new directory.
+case_n=0
+expect_extract() {
+  local got out
+  case_n=$((case_n + 1))
+  out="$tmp/out-$case_n"
+  mkdir "$out"
+  if got="$(python3 "$HELPER" "$tmp/podman-index.json" agency/podman linux-x86_64-musl \
+    --extract "$3" "$out" bin/newuidmap bin/newgidmap 2> "$tmp/err")"; then
+    if [ "$2" = ok ] && [ "$got" = "$pinned" ] && cmp -s "$out/newuidmap" "$bundle/bin/newuidmap" &&
+      cmp -s "$out/newgidmap" "$bundle/bin/newgidmap" && [ "$(names "$out")" = "newgidmap newuidmap " ]; then
+      echo "ok: $1"
+    else
+      echo "FAIL: $1: the helper extracted [$(names "$out")] and printed [$got]" >&2
+      failures=$((failures + 1))
+    fi
+  elif [ "$2" = refused ] && [ -z "$(names "$out")" ]; then
+    echo "ok: $1"
+  else
+    echo "FAIL: $1: want $2, got exit non-zero: $(cat "$tmp/err")" >&2
+    failures=$((failures + 1))
+  fi
+}
+tar -C "$bundle" -cf "$tmp/good.tar" bin/podman bin/newgidmap bin/newuidmap
+podman_index "$good_manifest"
+expect_extract "the two helpers with the manifest bytes are extracted" ok "$tmp/good.tar"
+podman_index "$(mentry bin/newgidmap "$(printf '0%.0s' {1..64})"),$(mentry bin/newuidmap)"
+expect_extract "a helper with another sha256 is refused" refused "$tmp/good.tar"
+podman_index "$(mentry bin/newgidmap "" 1),$(mentry bin/newuidmap)"
+expect_extract "a helper with another size is refused" refused "$tmp/good.tar"
+podman_index "$(mentry bin/newuidmap)"
+expect_extract "a helper with no manifest entry is refused" refused "$tmp/good.tar"
+podman_index "$good_manifest,$(mentry bin/newgidmap)"
+expect_extract "a helper with two manifest entries is refused" refused "$tmp/good.tar"
+podman_index "$(mentry bin/newgidmap "" "" dir),$(mentry bin/newuidmap)"
+expect_extract "a manifest entry that is not a file is refused" refused "$tmp/good.tar"
+podman_index "$good_manifest"
+tar -C "$bundle" -cf "$tmp/missing.tar" bin/podman bin/newuidmap
+expect_extract "a tar with no newgidmap is refused" refused "$tmp/missing.tar"
+tar -C "$bundle" -cf "$tmp/dot.tar" ./bin/newgidmap ./bin/newuidmap
+expect_extract "members under another name are not taken" refused "$tmp/dot.tar"
+cp "$tmp/good.tar" "$tmp/twice.tar"
+tar -C "$bundle" -rf "$tmp/twice.tar" bin/newgidmap
+expect_extract "a tar that holds a helper twice is refused" refused "$tmp/twice.tar"
+links="$tmp/links"
+mkdir -p "$links/bin"
+cp "$bundle/bin/newuidmap" "$bundle/bin/podman" "$links/bin/"
+ln -s podman "$links/bin/newgidmap"
+tar -C "$links" -cf "$tmp/symlink.tar" bin/newgidmap bin/newuidmap
+expect_extract "a helper that is a symbolic link is refused" refused "$tmp/symlink.tar"
+hard="$tmp/hard"
+mkdir -p "$hard/bin"
+cp "$bundle/bin/newgidmap" "$bundle/bin/newuidmap" "$hard/bin/"
+ln "$hard/bin/newgidmap" "$hard/bin/other"
+tar -C "$hard" -cf "$tmp/hardlink.tar" bin/other bin/newgidmap bin/newuidmap
+expect_extract "a helper that is a hard link is refused" refused "$tmp/hardlink.tar"
+gzip -c "$tmp/good.tar" > "$tmp/good.tar.gz"
+expect_extract "a compressed tar is refused" refused "$tmp/good.tar.gz"
+
 [ "$failures" -eq 0 ] || {
   echo "$failures case(s) failed" >&2
   exit 1

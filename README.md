@@ -99,17 +99,19 @@ ATCD_VERSION = "0.2.6-rc.202611202013.g2c7d0dfbc381"
 ATCD_SHA256:x86-64 = "0eec49f3..."
 ATCD_SHA256:aarch64 = "539859d5..."
 ATCD_GUARD_SHA256 = "f91e86a5..."
+ATCD_PODMAN_SHA256:x86-64 = "5b021086..."
+ATCD_PODMAN_SHA256:aarch64 = "54f42723..."
 ATCD_INSTALLER_SHA256 = "394dbf8f..."
 ```
 
-`do_fetch` downloads three files from `https://atc.dev/agency/blobs/sha256/<sha256>`
-and checks the sha256 of each: the binary, the boot-confirm guard and
-`install-atcd.sh`. The layer keeps no copy of the guard or of the script.
+`do_fetch` downloads four files from `https://atc.dev/agency/blobs/sha256/<sha256>`
+and checks the sha256 of each: the binary, the boot-confirm guard,
+`install-atcd.sh` and the podman bundle (see "podman helpers" below). The layer keeps no copy of the guard or of the script.
 `do_compile` then runs `install-atcd.sh` with no network access, against the
 signed index of the release in `recipes-core/atc/files/atcd-release/`. The
 script checks the index signature, the track, the version and the binary's
 sha256. `do_compile` then checks that the signed index names the guard's
-sha256, so the guard is the one of the same release.
+sha256 and the podman bundle's sha256, so both are of the same release.
 
 `ATCD_INSTALLER_SHA256` stays pinned in the layer, also when you follow a
 track: the script verifies the index, so it must not come from one.
@@ -132,14 +134,16 @@ works with `BB_NO_NETWORK = "1"`.
 2. Read the version and the digests from the index:
 
    ```sh
-   python3 -c 'import json; d = json.load(open("index.json")); print(d["track"], d["version"]); [print(p, t, e["digest"]) for p in ("agency/atcd", "agency/atcd-boot-confirm", "agency/install-atcd") for t, e in sorted(d["artifacts"][p].items())]'
+   python3 -c 'import json; d = json.load(open("index.json")); print(d["track"], d["version"]); [print(p, t, e["digest"]) for p in ("agency/atcd", "agency/atcd-boot-confirm", "agency/install-atcd", "agency/podman") for t, e in sorted(d["artifacts"][p].items())]'
    ```
 
 3. Set `ATCD_TRACK` and `ATCD_VERSION` to those values. Set
    `ATCD_SHA256:x86-64` to the `linux-x86_64-musl` digest,
    `ATCD_SHA256:aarch64` to the `linux-aarch64-musl` digest and
    `ATCD_GUARD_SHA256` to the `agency/atcd-boot-confirm` digest, without the
-   `sha256:` prefix. Change `ATCD_INSTALLER_SHA256` only to take a new
+   `sha256:` prefix. Set `ATCD_PODMAN_SHA256:x86-64` and
+   `ATCD_PODMAN_SHA256:aarch64` to the two `agency/podman` digests the same
+   way. A new podman digest changes the helper directory in the image. Change `ATCD_INSTALLER_SHA256` only to take a new
    `install-atcd.sh`. Read the script at
    `https://atc.dev/agency/blobs/sha256/<sha256>` before you pin it.
 
@@ -160,10 +164,13 @@ ATCD_FOLLOW_TRACK = "nightly"
 Each parse then reads the current signed index of that track, as
 `SRCREV = "${AUTOREV}"` reads a branch head. The recipe sets `ATCD_TRACK` to
 that track, and takes `ATCD_VERSION` and both `ATCD_SHA256` values from the
-index, and `ATCD_GUARD_SHA256` from its `agency/atcd-boot-confirm` entry.
-A release with no guard entry skips the recipe. Do not set `ATCD_TRACK` in `local.conf`: the recipe pins it, so the
-recipe's value wins. A new release changes the task
-signature, so the next build rebuilds atcd and the image. An unchanged release
+index. It takes `ATCD_GUARD_SHA256` from the `agency/atcd-boot-confirm` entry,
+and both `ATCD_PODMAN_SHA256` values from the `agency/podman` entry. A release
+with no guard entry or no podman entry skips the recipe.
+
+Do not set `ATCD_TRACK` in `local.conf`: the recipe pins it, so the recipe's
+value wins. A new release changes the task signature, so the next build
+rebuilds atcd and the image. An unchanged release
 reuses sstate. The index and its signature are kept in
 `${DL_DIR}/atcd-follow/<track>/<version>/`, and `do_compile` checks the
 signature with `install-atcd.sh`, as for a pin.
@@ -241,16 +248,18 @@ The contract that the blob server must keep:
 
 The layer's own files are MIT. The atcd binary is not. It is closed-source,
 and the recipe declares it as `CLOSED`, Yocto's name for a license that ships
-no text. The recipe makes three packages:
+no text. The recipe makes four packages:
 
 | Package | Holds | License |
 |---|---|---|
 | `atcd` | the atcd binary | `CLOSED` |
 | `atcd-boot-confirm` | the boot-confirm guard | `MIT \| Apache-2.0` |
 | `atcd-service` | the users, `atcd.service`, the store seed and the configuration files | `MIT` |
+| `atcd-podman-helpers` | `newuidmap` and `newgidmap` from the podman bundle | `BSD-3-Clause & MIT` |
 
-`atcd` depends on `atcd-boot-confirm` and `atcd-service`, so
-`IMAGE_INSTALL += "atcd"` installs all three.
+`atcd` depends on the other three, so `IMAGE_INSTALL += "atcd"` installs all
+four. The podman helpers are shadow-utils (BSD-3-Clause), linked static with
+musl (MIT).
 
 The recipe sets `LICENSE_FLAGS = "commercial_atcd"`. To accept the license,
 set this in `local.conf` or in the product's distro conf:
@@ -296,6 +305,45 @@ necessary on a `read-only-rootfs` image: that image feature removes the
 `shadow` package, which owns both files, so they are not in the image. The unit
 writes them on the writable `/etc` (for example an `overlayfs-etc` overlay). On
 a read-only `/etc` the unit fails, and its log names the file.
+
+### podman helpers
+
+Rootless podman needs the setuid helpers `newuidmap` and `newgidmap`.
+`atcd ctl setup-rootless --provision` installs them as root when the device
+has none. It cannot do that on a `read-only-rootfs` image. So the
+`atcd-podman-helpers` package puts them into the image, and atcd finds them
+there and installs nothing.
+
+The path contract with atcd. `<D>` is the `agency/podman` digest of the
+pinned release for the target, 64 lowercase hex characters without
+`sha256:`:
+
+| Path | Owner | Mode |
+|---|---|---|
+| `/usr/local/libexec/atc-podman/` | `root:root` | `0755` |
+| `/usr/local/libexec/atc-podman/helpers/` | `root:root` | `0755` |
+| `/usr/local/libexec/atc-podman/helpers/<D>/` | `root:root` | `0755` |
+| `.../helpers/<D>/newuidmap` | `root:atc` (gid 2000) | `04750` |
+| `.../helpers/<D>/newgidmap` | `root:atc` (gid 2000) | `04750` |
+
+Nothing else is under `atc-podman/`: no pin file, no shim, no lock file. The
+bytes are `bin/newuidmap` and `bin/newgidmap` of the podman bundle. Their
+sha256 and size equal the entries for those paths in the signed manifest.
+`do_compile` refuses the build otherwise. With mode `04750` and group `atc`,
+members of group `atc` can run them. Other users cannot.
+
+The tree is on the rootfs. It is never on `/var/atc` or other storage that
+`atc` can write: root must not run a file that a non-root account can write.
+Before it uses the helpers, atcd checks that each directory up to `/` belongs
+to root and has no group or world write bit. It checks the modes and the
+owners above, and that the files have no ACL. It also checks that their
+sha256 equals the signed manifest of the active podman bundle.
+
+Know the limit: atcd uses the image's helpers only while the device's active
+podman bundle digest is `<D>`. When atcd takes a newer podman bundle, the
+image's helpers no longer match, and a read-only device needs a new image with
+the new pin. To take a new bundle, follow "Take a new atcd release" above: it
+sets `ATCD_PODMAN_SHA256` from the index.
 
 ## Build
 

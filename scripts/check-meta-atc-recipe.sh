@@ -235,17 +235,22 @@ compile_body="$(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba' -e '}' "$RECIPE" |
 re_read='^index_guard=\$\(python3 \$\{WORKDIR\}/atcd-index-digest\.py \$local_dir/index\.json +agency/atcd-boot-confirm any\) \|\|$'
 # shellcheck disable=SC2016
 re_compare='^\[ "\$index_guard" = "sha256:\$\{ATCD_GUARD_SHA256\}" \] \|\|$'
-guard_checked=no
-guard_assigns=0
 mapfile -t compile_lines <<< "$compile_body"
-for i in "${!compile_lines[@]}"; do
-  case "${compile_lines[i]}" in *index_guard=*) guard_assigns=$((guard_assigns + 1)) ;; esac
-  if [[ ${compile_lines[i]} =~ $re_read ]] && [[ ${compile_lines[i + 1]:-} == "bbfatal "* ]] &&
-    [[ ${compile_lines[i + 2]:-} =~ $re_compare ]] && [[ ${compile_lines[i + 3]:-} == "bbfatal "* ]]; then
-    guard_checked=yes
-  fi
-done
-[ "$guard_checked" = yes ] && [ "$guard_assigns" -eq 1 ] ||
+# compile_checks <var> <read regex> <compare regex>: true when do_compile has
+# the read, a bbfatal, the compare and a bbfatal on four lines in a row, and
+# no other line assigns <var>. Gate 3m uses it too.
+compile_checks() {
+  local var="$1" read="$2" compare="$3" i checked=no assigns=0
+  for i in "${!compile_lines[@]}"; do
+    case "${compile_lines[i]}" in *"$var"=*) assigns=$((assigns + 1)) ;; esac
+    if [[ ${compile_lines[i]} =~ $read ]] && [[ ${compile_lines[i + 1]:-} == "bbfatal "* ]] &&
+      [[ ${compile_lines[i + 2]:-} =~ $compare ]] && [[ ${compile_lines[i + 3]:-} == "bbfatal "* ]]; then
+      checked=yes
+    fi
+  done
+  [ "$checked" = yes ] && [ "$assigns" -eq 1 ]
+}
+compile_checks index_guard "$re_read" "$re_compare" ||
   fail "do_compile does not check ATCD_GUARD_SHA256 against the guard entry of the verified index"
 search '^[^#]*install -m 0755 \$\{WORKDIR\}/\$\{ATCD_GUARD_FILE\} ' "$RECIPE" > /dev/null ||
   fail "do_install does not install the guard that do_fetch got by ATCD_GUARD_SHA256"
@@ -293,8 +298,8 @@ search "check_network_access" "$RECIPE" > /dev/null ||
 #     flag. The guard keeps its open license in its own package. CLOSED has no
 #     license text, so none is required here. The layer's own configuration
 #     must not accept the flag: that would accept the license for every product.
-search '^LICENSE = "CLOSED & \(MIT \| Apache-2\.0\)"$' "$RECIPE" > /dev/null ||
-  fail "the atcd recipe LICENSE is not \"CLOSED & (MIT | Apache-2.0)\""
+search '^LICENSE = "CLOSED & \(MIT \| Apache-2\.0\) & BSD-3-Clause"$' "$RECIPE" > /dev/null ||
+  fail "the atcd recipe LICENSE is not \"CLOSED & (MIT | Apache-2.0) & BSD-3-Clause\""
 search '^LICENSE:\$\{PN\} = "CLOSED"$' "$RECIPE" > /dev/null ||
   fail "the atcd package does not have the license CLOSED"
 search '^LICENSE:\$\{PN\}-boot-confirm = "MIT \| Apache-2\.0"$' "$RECIPE" > /dev/null ||
@@ -354,6 +359,88 @@ if search '^[^#]*(\$\{sysconfdir\}|/etc)/sub[ug]id' "$RECIPE" > /dev/null; then
   fail "the atcd recipe names /etc/subuid or /etc/subgid outside a comment. A FILES \
 entry conflicts with shadow, and a write of its own is not repeated at boot. Use atcd-hook-subids"
 fi
+
+# 3m. The image holds the setuid helpers of the pinned podman bundle, so
+#     `atcd ctl setup-rootless --provision` finds them on a read-only rootfs
+#     and does not install its own. atcd accepts this tree only:
+#       ${ATCD_LIBEXEC}/atc-podman/helpers/<podman digest>/  root:root 0755
+#       .../newuidmap and .../newgidmap  root:<ATC_GID> 04750
+#     with the bytes of the signed manifest of that bundle, and nothing else
+#     under atc-podman/. The tree is never on /var/atc: root must not run a
+#     file that a non-root account can write.
+# shellcheck disable=SC2016 # bitbake text, not shell expansions
+{
+  want_helpers='ATCD_PODMAN_HELPERS = "${ATCD_LIBEXEC}/atc-podman/helpers/${ATCD_PODMAN_SHA256}"'
+  want_dirs='install -d -m 0755 ${D}${ATCD_LIBEXEC}/atc-podman ${D}${ATCD_LIBEXEC}/atc-podman/helpers ${D}${ATCD_PODMAN_HELPERS}'
+  want_files='install -o 0 -g ${ATC_GID} -m 04750 ${B}/podman-helpers/$h ${D}${ATCD_PODMAN_HELPERS}/$h'
+  want_pkg='FILES:${PN}-podman-helpers = "${ATCD_LIBEXEC}/atc-podman"'
+  re_podman_read='^index_podman=\$\(python3 \$\{WORKDIR\}/atcd-index-digest\.py \$local_dir/index\.json +agency/podman \$\{ATCD_TARGET\}\) \|\|$'
+  re_podman_compare='^\[ "\$index_podman" = "sha256:\$\{ATCD_PODMAN_SHA256\}" \] \|\|$'
+  re_extract='^python3 \$\{WORKDIR\}/atcd-index-digest\.py \$local_dir/index\.json agency/podman \$\{ATCD_TARGET\} +--extract \$\{B\}/podman\.tar \$\{B\}/podman-helpers bin/newuidmap bin/newgidmap > /dev/null \|\|$'
+}
+# The recipe with its continuation lines joined and its comments dropped.
+recipe_code="$(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba' -e '}' "$RECIPE" |
+  awk '!/^[[:space:]]*(#|$)/ { sub(/^[[:space:]]+/, ""); print }')"
+# Each line that names the tree must be one of the four lines above, and each
+# of the four must be there. So no other file, directory, mode, group or
+# package reaches the tree.
+podman_lines="$(grep -E 'atc-podman|ATCD_PODMAN_HELPERS' <<< "$recipe_code" | LC_ALL=C sort -u || true)"
+want_lines="$(printf '%s\n' "$want_helpers" "$want_dirs" "$want_files" "$want_pkg" | LC_ALL=C sort -u)"
+[ "$podman_lines" = "$want_lines" ] ||
+  fail "the atcd recipe does not install the podman helpers exactly as atcd expects: \
+\${ATCD_LIBEXEC}/atc-podman/helpers/\${ATCD_PODMAN_SHA256}/ with dirs 0755, \
+files root:\${ATC_GID} 04750, and one package that holds only that tree. Lines that \
+name the tree: $podman_lines"
+install_body="$(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba' -e '}' "$RECIPE" |
+  awk '/^do_install\(\) \{/ { on = 1; next }
+    on && /^\}/ { exit }
+    on && !/^[[:space:]]*(#|$)/ { sub(/^[[:space:]]+/, ""); print }')"
+for line in "$want_dirs" "$want_files" 'for h in newuidmap newgidmap; do'; do
+  grep -qxF -e "$line" <<< "$install_body" ||
+    fail "do_install of the atcd recipe does not run: $line"
+done
+if grep -E '^FILES:' <<< "$recipe_code" | grep -qE "(${WANT_STORE_ROOT}|\\\$\\{localstatedir\\}/atc)([/ \"]|$)"; then
+  fail "a FILES list of the atcd recipe names the store root ${WANT_STORE_ROOT}. atc can write \
+there, so a package must not put a file under it"
+fi
+search '^PACKAGES =\+ "([^"]* )?\$\{PN\}-podman-helpers[ "]' "$RECIPE" > /dev/null ||
+  fail "the atcd recipe does not list \${PN}-podman-helpers in PACKAGES"
+search '^RDEPENDS:\$\{PN\} \+= "([^"]* )?\$\{PN\}-podman-helpers[ "]' "$RECIPE" > /dev/null ||
+  fail "\${PN} does not RDEPEND on \${PN}-podman-helpers, so an image with atcd can lack the helpers"
+search '^LICENSE:\$\{PN\}-podman-helpers = "[^"]+"$' "$RECIPE" > /dev/null ||
+  fail "the \${PN}-podman-helpers package has no license of its own"
+# The bundle comes from the release by its digest, and do_fetch checks it.
+# unpack=0: do_compile takes two files from it, and nothing else.
+search '^ATCD_PODMAN_FILE = "[^"/]*\$\{ATCD_PODMAN_SHA256\}[^"/]*"$' "$RECIPE" > /dev/null ||
+  fail "the podman download file name does not hold \${ATCD_PODMAN_SHA256}; two pins would share one file in DL_DIR"
+search '^[^#]*https://[^;"]*/\$\{ATCD_PODMAN_SHA256\};downloadfilename=\$\{ATCD_PODMAN_FILE\};sha256sum=\$\{ATCD_PODMAN_SHA256\};unpack=0([ "\\]|$)' "$RECIPE" > /dev/null ||
+  fail "the atcd recipe does not fetch the podman bundle in SRC_URI by its address \
+\${ATCD_PODMAN_SHA256} with sha256sum=\${ATCD_PODMAN_SHA256} and unpack=0"
+# The pin of each target is the agency/podman digest of the pinned index, read
+# at its JSON path as atcd reads it.
+for pair in x86-64:linux-x86_64-musl aarch64:linux-aarch64-musl; do
+  arch="${pair%%:*}" target="${pair#*:}"
+  sha="$(search_optional "^ATCD_PODMAN_SHA256:${arch} = \"[0-9a-f]{64}\"$" "$RECIPE" | sed -n 's/.*"\(.*\)".*/\1/p')"
+  [ -n "$sha" ] || fail "the atcd recipe does not pin ATCD_PODMAN_SHA256:${arch} to a 64-hex sha256"
+  index_podman="$(python3 "$DIGEST_HELPER" "$index" agency/podman "$target")" || index_podman=""
+  [ "$index_podman" = "sha256:$sha" ] ||
+    fail "ATCD_PODMAN_SHA256:${arch} is not the digest of agency/podman ${target} in the index in atcd-release/"
+done
+search "^[^#]*d\\.setVar\\('ATCD_PODMAN_SHA256:' \\+ override, digest\\)" "$RECIPE" > /dev/null ||
+  fail "the follow mode does not set ATCD_PODMAN_SHA256 from the index, so a followed release keeps the pinned bundle"
+# do_compile checks the pin against the verified index, then takes the two
+# helpers with the manifest check. Each step stops the build with bbfatal.
+compile_checks index_podman "$re_podman_read" "$re_podman_compare" ||
+  fail "do_compile does not check ATCD_PODMAN_SHA256 against the agency/podman entry of the verified index"
+extracted=no
+for i in "${!compile_lines[@]}"; do
+  if [[ ${compile_lines[i]} =~ $re_extract ]] && [[ ${compile_lines[i + 1]:-} == "bbfatal "* ]]; then
+    extracted=yes
+  fi
+done
+[ "$extracted" = yes ] ||
+  fail "do_compile does not take newuidmap and newgidmap from the bundle with the check \
+against the signed manifest, or a failed check does not stop the build"
 
 # 3f. No `sudo` group in EXTRA_USERS_PARAMS. That group is a Debian convention;
 #     Yocto's sudo package does not create it, so `useradd -G atc,sudo` fails on

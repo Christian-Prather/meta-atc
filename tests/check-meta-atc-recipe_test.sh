@@ -75,6 +75,8 @@ make_fixture() {
   printf '%s' '{"artifacts":{"agency/atc":{"linux-x86_64-musl":{"digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","url":"u"}},' \
     '"agency/atcd-boot-confirm":{"any":{"digest":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","size":1,"url":"u"}},' \
     '"agency/install-atcd":{"any":{"digest":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","size":1,"url":"u"}},' \
+    '"agency/podman":{"linux-aarch64-musl":{"digest":"sha256:4444444444444444444444444444444444444444444444444444444444444444","manifest":[],"url":"u"},' \
+    '"linux-x86_64-musl":{"digest":"sha256:3333333333333333333333333333333333333333333333333333333333333333","manifest":[],"url":"u"}},' \
     '"agency/atcd":{"linux-aarch64-musl":{"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","size":1,"url":"u"},' \
     '"linux-x86_64-musl":{"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":1,"url":"u"}}},' \
     '"track":"stable","version":"0.2.4"}' > "$root/meta-atc/recipes-core/atc/files/atcd-release/index.json"
@@ -92,8 +94,12 @@ meta-tegra https://example.invalid/meta-tegra scarthgap e7d217e24ca9943e959e80da
 EOF
 
   cat > "$root/meta-atc/recipes-core/atc/atcd_0.1.0.bb" << 'EOF'
-LICENSE = "CLOSED & (MIT | Apache-2.0)"
+LICENSE = "CLOSED & (MIT | Apache-2.0) & BSD-3-Clause"
 LICENSE:${PN} = "CLOSED"
+LICENSE:${PN}-podman-helpers = "BSD-3-Clause & MIT"
+PACKAGES =+ "${PN}-boot-confirm ${PN}-service ${PN}-podman-helpers"
+FILES:${PN}-podman-helpers = "${ATCD_LIBEXEC}/atc-podman"
+RDEPENDS:${PN} += "${PN}-boot-confirm ${PN}-service ${PN}-podman-helpers"
 LICENSE:${PN}-boot-confirm = "MIT | Apache-2.0"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 LICENSE_FLAGS = "commercial_atcd"
@@ -120,12 +126,18 @@ ATCD_GUARD_SHA256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 ATCD_INSTALLER_SHA256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 ATCD_GUARD_FILE = "atcd-boot-confirm-${ATCD_GUARD_SHA256}.sh"
 ATCD_INSTALLER_FILE = "install-atcd-${ATCD_INSTALLER_SHA256}.sh"
+ATCD_PODMAN_SHA256 = ""
+ATCD_PODMAN_SHA256:x86-64 = "3333333333333333333333333333333333333333333333333333333333333333"
+ATCD_PODMAN_SHA256:aarch64 = "4444444444444444444444444444444444444444444444444444444444444444"
+ATCD_PODMAN_FILE = "podman-${ATCD_PODMAN_SHA256}.tar.zst"
+ATCD_PODMAN_HELPERS = "${ATCD_LIBEXEC}/atc-podman/helpers/${ATCD_PODMAN_SHA256}"
 SRC_URI = "file://atcd-release/index.json \
            file://atcd-release/index.json.sig \
            file://atcd-index-digest.py \
            https://atc.dev/agency/blobs/sha256/${ATCD_SHA256};downloadfilename=atcd-${ATCD_VERSION}-${ATCD_TARGET};sha256sum=${ATCD_SHA256} \
            https://atc.dev/agency/blobs/sha256/${ATCD_GUARD_SHA256};downloadfilename=${ATCD_GUARD_FILE};sha256sum=${ATCD_GUARD_SHA256} \
            https://atc.dev/agency/blobs/sha256/${ATCD_INSTALLER_SHA256};downloadfilename=${ATCD_INSTALLER_FILE};sha256sum=${ATCD_INSTALLER_SHA256} \
+           https://atc.dev/agency/blobs/sha256/${ATCD_PODMAN_SHA256};downloadfilename=${ATCD_PODMAN_FILE};sha256sum=${ATCD_PODMAN_SHA256};unpack=0 \
            "
 ATCD_NETRC_DIR ?= ""
 do_fetch[vardepsexclude] += "ATCD_NETRC_DIR FETCHCMD_wget"
@@ -133,6 +145,8 @@ ATCD_FOLLOW_TRACK ?= ""
 PSEUDO_IGNORE_PATHS .= ",${ATCD_FOLLOW_DIR}"
 def atcd_follow_track(d):
     d.setVar('__BB_DONT_CACHE', '1')
+    for override, digest in podman.items():
+        d.setVar('ATCD_PODMAN_SHA256:' + override, digest)
     bb.fetch2.check_network_access(d, 'atcd', 'https://atc.dev/agency/nightly/index.json')
 do_compile() {
     ATC_TRACK="${ATCD_TRACK}" ATC_VERSION="${ATCD_VERSION}" ATC_TARGET="${ATCD_TARGET}" \
@@ -143,10 +157,22 @@ do_compile() {
         bbfatal "cannot read the guard digest"
     [ "$index_guard" = "sha256:${ATCD_GUARD_SHA256}" ] ||
         bbfatal "the index does not name the guard"
+    index_podman=$(python3 ${WORKDIR}/atcd-index-digest.py $local_dir/index.json \
+        agency/podman ${ATCD_TARGET}) ||
+        bbfatal "cannot read the podman digest"
+    [ "$index_podman" = "sha256:${ATCD_PODMAN_SHA256}" ] ||
+        bbfatal "the index does not name the podman bundle"
+    python3 ${WORKDIR}/atcd-index-digest.py $local_dir/index.json agency/podman ${ATCD_TARGET} \
+        --extract ${B}/podman.tar ${B}/podman-helpers bin/newuidmap bin/newgidmap > /dev/null ||
+        bbfatal "no helpers that match the manifest"
 }
 do_install() {
     install -m 0755 ${WORKDIR}/${ATCD_GUARD_FILE} ${D}${ATCD_GUARD_PATH}
     actual_machine=$(readelf -h "${B}/atcd")
+    install -d -m 0755 ${D}${ATCD_LIBEXEC}/atc-podman ${D}${ATCD_LIBEXEC}/atc-podman/helpers ${D}${ATCD_PODMAN_HELPERS}
+    for h in newuidmap newgidmap; do
+        install -o 0 -g ${ATC_GID} -m 04750 ${B}/podman-helpers/$h ${D}${ATCD_PODMAN_HELPERS}/$h
+    done
 }
 EOF
 
@@ -459,6 +485,111 @@ subids_unit_case subids-unit-other-exec "a subordinate-id unit that runs another
   's#^ExecStart=.*#ExecStart=/bin/true#'
 subids_unit_case subids-unit-condition "a subordinate-id unit with a condition is caught" \
   's#^\[Unit\]$#[Unit]\nConditionPathIsReadWrite=/etc#'
+
+# 3m. The setuid helpers of the pinned podman bundle in the image: the path,
+#     the mode, the group, the package, the pin and the do_compile checks.
+#     Each mutation below breaks one part.
+# shellcheck disable=SC2016
+{
+  # The path.
+  atcd_recipe_case helpers-no-helpers-dir "a helper tree without helpers/ is caught" \
+    's#^ATCD_PODMAN_HELPERS = .*#ATCD_PODMAN_HELPERS = "${ATCD_LIBEXEC}/atc-podman/${ATCD_PODMAN_SHA256}"#'
+  atcd_recipe_case helpers-in-store "a helper tree on the store root is caught" \
+    's#^ATCD_PODMAN_HELPERS = .*#ATCD_PODMAN_HELPERS = "/var/atc/atc-podman/helpers/${ATCD_PODMAN_SHA256}"#'
+  atcd_recipe_case helpers-libdir "a helper tree under libexecdir, not ATCD_LIBEXEC, is caught" \
+    's#^ATCD_PODMAN_HELPERS = "${ATCD_LIBEXEC}#ATCD_PODMAN_HELPERS = "${libexecdir}#'
+  atcd_recipe_case helpers-by-version "a helper tree named by the version, not the digest, is caught" \
+    's#helpers/${ATCD_PODMAN_SHA256}"#helpers/${ATCD_VERSION}"#'
+  # The mode and the group.
+  atcd_recipe_case helpers-mode-world "helpers with mode 04755 are caught" 's/-m 04750 /-m 04755 /'
+  atcd_recipe_case helpers-mode-no-setuid "helpers with no setuid bit are caught" 's/-m 04750 /-m 0750 /'
+  atcd_recipe_case helpers-group-root "helpers with group root are caught" 's/-g ${ATC_GID} -m 04750/-g 0 -m 04750/'
+  atcd_recipe_case helpers-group-name "helpers with a group name, not ATC_GID, are caught" \
+    's/-g ${ATC_GID} -m 04750/-g atc -m 04750/'
+  atcd_recipe_case helpers-owner-atc "helpers owned by atc are caught" 's/install -o 0 -g/install -o ${ATC_UID} -g/'
+  atcd_recipe_case helpers-dir-mode "a helper directory with mode 0775 is caught" \
+    's/install -d -m 0755 ${D}${ATCD_LIBEXEC}\/atc-podman /install -d -m 0775 ${D}${ATCD_LIBEXEC}\/atc-podman /'
+  atcd_recipe_case helpers-one-only "a do_install of newuidmap only is caught" \
+    's/for h in newuidmap newgidmap; do/for h in newuidmap; do/'
+  atcd_recipe_case helpers-not-installed "a do_install without the helpers is caught" \
+    '/install -o 0 -g ${ATC_GID} -m 04750/d'
+  atcd_recipe_case helpers-pin-file "a provisioned.json pin in the tree is caught" \
+    '/^    done$/a\    touch ${D}${ATCD_LIBEXEC}/atc-podman/provisioned.json'
+  atcd_recipe_case helpers-shim-dir "a shim directory in the tree is caught" \
+    '/^    done$/a\    install -d ${D}/usr/local/libexec/atc-podman/shim'
+  atcd_recipe_case helpers-outside-install "helpers installed outside do_install are caught" \
+    's/^do_install() {/do_unused() {/'
+  # The package.
+  atcd_recipe_case helpers-files-parent "a helper package that holds all of ATCD_LIBEXEC is caught" \
+    's#^FILES:${PN}-podman-helpers = .*#FILES:${PN}-podman-helpers = "${ATCD_LIBEXEC}"#'
+  atcd_recipe_case helpers-files-store "a helper package that also holds a file on /var/atc is caught" \
+    's#^FILES:${PN}-podman-helpers = .*#FILES:${PN}-podman-helpers = "${ATCD_LIBEXEC}/atc-podman /var/atc/podman"#'
+  atcd_recipe_case helpers-files-localstatedir "a package that holds the store root by localstatedir is caught" \
+    's#^FILES:${PN} = .*#FILES:${PN} = "${ATCD_REMOTE_PATH}"\nFILES:${PN}-store = "${localstatedir}/atc"#'
+  atcd_recipe_case helpers-files-var-atc "a package that holds a file under /var/atc is caught" \
+    's#^FILES:${PN} = .*#FILES:${PN} = "${ATCD_REMOTE_PATH}"\nFILES:${PN}-store = "/var/atc/podman"#'
+  atcd_recipe_case helpers-in-service-pkg "the helper tree in another package is caught" \
+    's#${localstatedir}/lib/systemd/linger"#${localstatedir}/lib/systemd/linger ${ATCD_LIBEXEC}/atc-podman"#'
+  atcd_recipe_case helpers-not-packaged "a helper package missing from PACKAGES is caught" \
+    's/^PACKAGES =+ .*/PACKAGES =+ "${PN}-boot-confirm ${PN}-service"/'
+  atcd_recipe_case helpers-not-rdepended "an atcd package that does not RDEPEND on the helpers is caught" \
+    's/^RDEPENDS:${PN} += .*/RDEPENDS:${PN} += "${PN}-boot-confirm ${PN}-service"/'
+  atcd_recipe_case helpers-no-license "a helper package with no license of its own is caught" \
+    '/^LICENSE:${PN}-podman-helpers = /d'
+  # The pin and the fetch.
+  atcd_recipe_case podman-no-pin-x86 "a recipe with no ATCD_PODMAN_SHA256:x86-64 is caught" \
+    '/^ATCD_PODMAN_SHA256:x86-64/d'
+  atcd_recipe_case podman-no-pin-arm "a recipe with no ATCD_PODMAN_SHA256:aarch64 is caught" \
+    '/^ATCD_PODMAN_SHA256:aarch64/d'
+  atcd_recipe_case podman-pin-off-index "an ATCD_PODMAN_SHA256 that is not the index digest is caught" \
+    's/^ATCD_PODMAN_SHA256:x86-64 = .*/ATCD_PODMAN_SHA256:x86-64 = "5555555555555555555555555555555555555555555555555555555555555555"/'
+  atcd_recipe_case podman-pin-swapped "per-target ATCD_PODMAN_SHA256 values that are swapped are caught" \
+    's/^ATCD_PODMAN_SHA256:x86-64 = .*/ATCD_PODMAN_SHA256:x86-64 = "4444444444444444444444444444444444444444444444444444444444444444"/'
+  atcd_recipe_case podman-pin-is-atcd "an ATCD_PODMAN_SHA256 that is the atcd digest is caught" \
+    's/^ATCD_PODMAN_SHA256:x86-64 = .*/ATCD_PODMAN_SHA256:x86-64 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"/'
+  atcd_recipe_case podman-not-fetched "a podman bundle missing from SRC_URI is caught" \
+    '/${ATCD_PODMAN_SHA256};downloadfilename/d'
+  atcd_recipe_case podman-no-sha256sum "a podman bundle URL with no sha256sum is caught" \
+    's/;sha256sum=${ATCD_PODMAN_SHA256}//'
+  atcd_recipe_case podman-unpacked "a podman bundle that do_unpack unpacks is caught" 's/;unpack=0//'
+  atcd_recipe_case podman-shared-dl-name "a podman download file name without the digest is caught" \
+    's/^ATCD_PODMAN_FILE = .*/ATCD_PODMAN_FILE = "podman.tar.zst"/'
+  atcd_recipe_case podman-not-followed "a follow mode that does not set the podman pin is caught" \
+    "/d.setVar('ATCD_PODMAN_SHA256:' + override, digest)/d"
+  # The do_compile checks.
+  atcd_recipe_case podman-no-read "a do_compile that does not read the podman digest is caught" \
+    '/index_podman=$(python3/,/bbfatal "cannot read the podman digest"/d'
+  atcd_recipe_case podman-no-compare "a do_compile that does not compare the podman digest is caught" \
+    '/\[ "$index_podman" = /,/bbfatal "the index does not name the podman bundle"/d'
+  atcd_recipe_case podman-compare-other "a podman digest compared with another value is caught" \
+    's/"sha256:${ATCD_PODMAN_SHA256}" \]/"sha256:${ATCD_SHA256}" ]/'
+  atcd_recipe_case podman-read-other-target "a podman digest read for another target is caught" \
+    's/        agency\/podman ${ATCD_TARGET})/        agency\/podman linux-x86_64-musl)/'
+  atcd_recipe_case podman-compare-not-fatal "a podman compare that does not stop the build is caught" \
+    's/        bbfatal "the index does not name the podman bundle"/        true/'
+  atcd_recipe_case podman-overwritten "a second index_podman assignment before the compare is caught" \
+    '/\[ "$index_podman" = /i\    index_podman="sha256:${ATCD_PODMAN_SHA256}"'
+  atcd_recipe_case podman-no-extract "a do_compile that does not take the helpers with the manifest check is caught" \
+    '/--extract/,/bbfatal "no helpers that match the manifest"/d'
+  atcd_recipe_case podman-extract-not-fatal "a manifest check that does not stop the build is caught" \
+    's/        bbfatal "no helpers that match the manifest"/        true/'
+  atcd_recipe_case podman-extract-one "a manifest check of newuidmap only is caught" \
+    's/bin\/newuidmap bin\/newgidmap > /bin\/newuidmap > /'
+}
+# The gate reads the podman digest at its JSON path. A nested object that
+# holds the pinned podman text, before an entry with another digest, must not
+# pass.
+dpnest="$tmp/nested-podman"
+make_fixture "$dpnest"
+pinned_podman='"agency/podman":{"linux-aarch64-musl":{"digest":"sha256:4444444444444444444444444444444444444444444444444444444444444444"'
+other_podman='"agency/podman":{"linux-aarch64-musl":{"digest":"sha256:1111111111111111111111111111111111111111111111111111111111111111"'
+sed -i "s|$pinned_podman|\"aaa\":{$pinned_podman}}},$other_podman|" \
+  "$dpnest/meta-atc/recipes-core/atc/files/atcd-release/index.json"
+grep -qF "\"aaa\":{$pinned_podman" "$dpnest/meta-atc/recipes-core/atc/files/atcd-release/index.json" || {
+  echo "FAIL: the nested-podman fixture did not apply" >&2
+  failures=$((failures + 1))
+}
+expect fail "a nested copy of the podman entry does not pass for the real one" "$dpnest"
 
 for conf in layer.conf distro/include/atc.inc; do
   case_n_accept=$((${case_n_accept:-0} + 1))
